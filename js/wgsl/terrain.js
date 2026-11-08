@@ -1,225 +1,211 @@
-// Fuzzzy Effects: an island cove modelled on Cala Goloritzé (Baunei, Sardinia).
-// White pebble beach in a crescent cove, limestone cliffs, scrub on top and the needle
-// (the Aguglia) at the right-hand end of the beach. Shown when F.windP[1].x (beach) > 0.5.
-// The island sits behind the start view (+z); the sun sets towards -z, so it lights the cliffs.
+// Fuzzzy Effects: the arch at Cala Goloritzé (Baunei, Sardinia), matched to a reference photo
+// taken from the water at midday. The headland and the arch are a signed-distance model drawn by
+// ray marching (a height map cannot make an arch). Shown when F.windP[1].x (beach) > 0.5.
+// Camera for the reference view: (0, 2.5, 0), looking along -z, pitched down about 10 degrees.
 import { FRAME_WGSL, ATMO_CORE_WGSL } from './common.js';
 import { SKY_RENDER_FUNCS } from './sky.js';
 
-export const TERRAIN_GRID = 1024;               // vertices per side
-export const TERRAIN_MIN = [-1000, 200];        // world x, z of the grid corner (m)
-export const TERRAIN_SIZE = 2000;               // grid side (m), about 2 m between vertices
-
-// Height of the island in metres (sea level 0). terrainBase has no fine noise (cheap, used by
-// the water and the camera); terrainH adds erosion detail for the land itself.
-export const TERRAIN_FN = /* wgsl */ `
-const NEEDLE_C: vec2f = vec2f(-78.0, 627.0);
-const NEEDLE_H: f32 = 143.0;
+// Shared by the rock pass and the sea (reflections, shallows).
+export const ROCK_FN = /* wgsl */ `
 fn beachOn() -> bool { return F.windP[1].x > 0.5; }
-fn coastZ(x: f32) -> f32 { let xc = clamp(x, -330.0, 330.0); return 640.0 - 0.0035 * xc * xc; }
-fn beachW(x: f32) -> f32 { return 55.0 * exp(-(x / 125.0) * (x / 125.0)); }
-fn islandMask(p: vec2f) -> f32 {
-  return (1.0 - smoothstep(650.0, 980.0, abs(p.x))) * (1.0 - smoothstep(1500.0, 2150.0, p.y));
+
+fn h3(p: vec3f) -> f32 { return fract(sin(dot(p, vec3f(127.1, 311.7, 74.7))) * 43758.5453); }
+fn vnoise(p: vec3f) -> f32 {
+  let i = floor(p);
+  let f = fract(p);
+  let u = f * f * (3.0 - 2.0 * f);
+  let a = mix(mix(h3(i), h3(i + vec3f(1.0, 0.0, 0.0)), u.x), mix(h3(i + vec3f(0.0, 1.0, 0.0)), h3(i + vec3f(1.0, 1.0, 0.0)), u.x), u.y);
+  let b = mix(mix(h3(i + vec3f(0.0, 0.0, 1.0)), h3(i + vec3f(1.0, 0.0, 1.0)), u.x), mix(h3(i + vec3f(0.0, 1.0, 1.0)), h3(i + vec3f(1.0, 1.0, 1.0)), u.x), u.y);
+  return mix(a, b, u.z) * 2.0 - 1.0;
 }
-// x = distance inland from the waterline (negative at sea), y = how much beach there is (0..1)
-fn shoreInfo(p: vec2f) -> vec2f {
-  let bwn = beachW(p.x) / 55.0;
-  let wob = 10.0 * gnoise(p * 0.011 + 3.7) * (1.0 - bwn);
-  return vec2f(p.y - coastZ(p.x) + wob, bwn);
+fn fbm3(p: vec3f, oct: i32) -> f32 {
+  var s = 0.0;
+  var a = 0.5;
+  var q = p;
+  for (var i = 0; i < oct; i++) { s += a * vnoise(q); q = q * 2.03 + vec3f(1.7, 9.2, 3.1); a *= 0.5; }
+  return s;
 }
-fn needleH(p: vec2f, detail: bool) -> f32 {
-  let d = p - NEEDLE_C;
-  let r = length(d);
-  if (r > 40.0) { return -100.0; }
-  var rr = r;
-  if (detail && r > 0.01) {
-    let dir = d / r;
-    rr = r * (1.0 + 0.32 * gnoise(dir * 1.7 + 7.0) + 0.18 * gnoise(dir * 4.1 + 2.0) + 0.08 * gnoise(d * 0.6));
+fn smin(a: f32, b: f32, k: f32) -> f32 {
+  let h = clamp(0.5 + 0.5 * (b - a) / k, 0.0, 1.0);
+  return mix(b, a, h) - k * h * (1.0 - h);
+}
+
+// headland face: runs from the arch (HA) towards the camera's right; HN points out of the rock
+const HA: vec3f = vec3f(-1.0, 0.0, -97.0);
+const HD: vec3f = vec3f(0.681, 0.0, 0.732);
+const HN: vec3f = vec3f(-0.732, 0.0, 0.681);
+
+fn headland(p: vec3f) -> f32 {
+  let r = p - HA;
+  let s = dot(r, HD);
+  // face leans back as it rises, with big bulges and buttresses
+  let face = (dot(r, HN) + max(p.y, 0.0) * 0.12 + 4.0 * vnoise(vec3f(s * 0.06, p.y * 0.05, 1.3))) * 0.94;
+  // ridge climbs from the arch towards the right, then levels into the hillside
+  let sp = max(s, 0.0);
+  let ridge = 18.0 + 1.35 * sp - 0.003 * sp * sp + 6.0 * vnoise(vec3f(s * 0.05, 4.1, 2.0));
+  let top = (p.y - min(ridge, 170.0)) * 0.45;
+  let endc = -s - 2.0 + 0.12 * p.y;                 // seaward end, leaning slightly
+  return max(max(face, top), endc);
+}
+
+// the arch: a leaning outer leg standing in the sea and a thick lintel back to the headland
+fn archLeg(p: vec3f) -> f32 {
+  var q = p - vec3f(-18.5, 0.0, -96.0);
+  let t = clamp(q.y / 15.0, 0.0, 1.0);
+  q.x -= q.y * 0.85;                                  // leans hard towards the headland, like a ramp
+  let w = mix(7.5, 2.8, t);
+  let dxz = length(max(abs(q.xz) - vec2f(w, 4.5), vec2f(0.0))) + min(max(abs(q.x) - w, abs(q.z) - 4.5), 0.0);
+  let dy = max(-q.y - 6.0, q.y - 17.5);
+  return max(dxz, dy) - 1.0;
+}
+fn archLintel(p: vec3f) -> f32 {
+  let a = vec3f(-12.5, 17.0, -96.5);
+  let b = vec3f(1.5, 15.8, -97.0);
+  let pa = p - a;
+  let ba = b - a;
+  let h = clamp(dot(pa, ba) / dot(ba, ba), 0.0, 1.0);
+  var d = pa - ba * h;
+  d.y *= 0.82;                                         // a little taller than deep
+  return length(d) - 3.7;
+}
+
+// coarse shape (no fine detail): used by the sea and for shadows
+fn rockShape(p: vec3f) -> f32 {
+  return smin(headland(p), smin(archLeg(p), archLintel(p), 2.5), 3.0);
+}
+// full detail for the rock surface itself
+fn rockSDF(p: vec3f) -> f32 {
+  var d = rockShape(p);
+  if (d < 8.0) {
+    // big angular facets, then fluted vertical grooves, then small cracks
+    let f = fbm3(p * 0.05, 3);
+    d += 4.0 * (abs(f) - 0.15) + 1.4 * fbm3(p * vec3f(0.18, 0.07, 0.18), 3) + 0.3 * fbm3(p * 0.8, 2);
   }
-  // slender, craggy spire with stepped shoulders
-  let prof = 1.0 - smoothstep(2.0, 15.0, rr);
-  var spire = NEEDLE_H * pow(prof, 0.42);
-  spire -= 9.0 * smoothstep(0.35, 0.75, fract(spire / 26.0)) * (1.0 - prof);
-  let rubble = 16.0 * (1.0 - smoothstep(9.0, 30.0, r));
-  return max(spire, rubble);
+  return d;
 }
-fn terrainCore(p: vec2f, detail: bool) -> f32 {
-  let si = shoreInfo(p);
-  let u = si.x;
-  let bwn = si.y;
-  let bw = bwn * 55.0;
-  var h: f32;
-  if (u < 0.0) {
-    // seabed: gentle under the beach, a steep drop under the cliffs
-    h = max(u * mix(1.3, 0.075, bwn), -55.0);
-  } else {
-    let v = max(u - bw, 0.0);
-    // cliffs about 110-170 m at the shore, rising inland; a gorge (the codula) opens behind
-    // the beach, as at Goloritzé
-    var cliffH = 140.0 + 45.0 * gnoise(p * 0.004 + 1.3);
-    let gorgeW = 45.0 + 0.22 * v;
-    cliffH *= 1.0 - 0.8 * exp(-(p.x / gorgeW) * (p.x / gorgeW)) * smoothstep(-20.0, 30.0, v);
-    let vs = v * v / (v + 6.0);   // rounded foot (talus) where the beach meets the cliff
-    var c = cliffH * (1.0 - exp(-vs / 20.0));
-    // limestone benches: flat ledges between steep bands
-    let band = c / 14.0;
-    c = mix(c, (floor(band) + smoothstep(0.25, 0.95, fract(band))) * 14.0, 0.55);
-    h = min(u, bw) * 0.13 + c + v * 0.09;
-    if (detail) {
-      // eroded cliff faces, ledges and gullies
-      let e = gnoise(p * 0.035) * 0.6 + gnoise(p * 0.09 + 5.1) * 0.3 + gnoise(p * 0.25 + 9.3) * 0.1;
-      h += e * 9.0 * smoothstep(18.0, 50.0, v);
-    }
-  }
-  h = mix(-55.0, h, islandMask(p));
-  return max(h, needleH(p, detail));
+
+// seabed depth of the cove: shallow towards the beach (behind the camera), deeper out to sea
+// and to the left; a little shallower right under the rocks
+fn coveDepth(p: vec2f) -> f32 {
+  var d = 1.6 + max(60.0 - p.y, 0.0) * 0.072 + max(-p.x - 25.0, 0.0) * 0.06;
+  d += 2.0 * gnoise(p * 0.02);
+  let nearRock = rockShape(vec3f(p.x, -4.0, p.y));
+  d = mix(min(d, 3.0 + max(nearRock, 0.0) * 0.4), d, smoothstep(0.0, 25.0, nearRock));
+  return clamp(d, 1.2, 60.0);
 }
-fn terrainBase(p: vec2f) -> f32 { return terrainCore(p, false); }
-fn terrainH(p: vec2f) -> f32 { return terrainCore(p, true); }
 `;
 
-export const TERRAIN = FRAME_WGSL + ATMO_CORE_WGSL + /* wgsl */ `
+export const ROCKS = FRAME_WGSL + ATMO_CORE_WGSL + /* wgsl */ `
 @group(0) @binding(0) var<uniform> F: Frame;
 @group(0) @binding(1) var transLUT: texture_2d<f32>;
 @group(0) @binding(2) var skyLUT: texture_2d<f32>;
 @group(0) @binding(3) var sampC: sampler;
-` + SKY_RENDER_FUNCS + TERRAIN_FN + /* wgsl */ `
-const GRID: u32 = ${TERRAIN_GRID}u;
-const T_MIN: vec2f = vec2f(${TERRAIN_MIN[0]}.0, ${TERRAIN_MIN[1]}.0);
-const T_SIZE: f32 = ${TERRAIN_SIZE}.0;
-
-struct VO {
-  @builtin(position) pos: vec4f,
-  @location(0) rel: vec3f,
-  @location(1) xz: vec2f,
-};
-
-@vertex fn vs(@builtin(vertex_index) vi: u32) -> VO {
+` + SKY_RENDER_FUNCS + ROCK_FN + /* wgsl */ `
+struct VO { @builtin(position) pos: vec4f, @location(0) ndc: vec2f };
+@vertex fn vs(@builtin(vertex_index) i: u32) -> VO {
+  let p = vec2f(f32((i << 1u) & 2u), f32(i & 2u)) * 2.0 - 1.0;
   var o: VO;
-  if (!beachOn()) { o.pos = vec4f(0.0, 0.0, -1.0, 1.0); return o; }
-  let q = vi / 6u;
-  let k = vi % 6u;
-  let cx = q % (GRID - 1u);
-  let cz = q / (GRID - 1u);
-  let ox = select(0u, 1u, k == 1u || k == 2u || k == 4u);
-  let oz = select(0u, 1u, k == 2u || k == 4u || k == 5u);
-  let xz = T_MIN + vec2f(f32(cx + ox), f32(cz + oz)) * (T_SIZE / f32(GRID - 1u));
-  let h = terrainH(xz);
-  // seabed far below the surface is never visible; fold it away so it costs no fragments
-  let world = vec3f(xz.x, max(h, -8.0), xz.y);
-  o.rel = world - F.camPos.xyz;
-  o.pos = F.viewProj * vec4f(o.rel, 1.0);
-  o.xz = xz;
+  o.pos = vec4f(p, 0.5, 1.0);
+  o.ndc = p;
   return o;
 }
+struct FO { @location(0) col: vec4f, @builtin(frag_depth) depth: f32 };
 
-fn hash2(p: vec2f) -> f32 { return fract(sin(dot(p, vec2f(127.1, 311.7))) * 43758.5453); }
+const BMIN: vec3f = vec3f(-45.0, -6.0, -135.0);
+const BMAX: vec3f = vec3f(170.0, 175.0, 90.0);
 
-// pebbles: a cell pattern of rounded stones with small brightness variation
-fn pebbles(p: vec2f) -> vec2f {
-  let g = p * 3.2;
-  let c = floor(g);
-  var best = 9.0;
-  var id = 0.0;
-  for (var j = -1; j <= 1; j++) {
-    for (var i = -1; i <= 1; i++) {
-      let cc = c + vec2f(f32(i), f32(j));
-      let o = vec2f(hash2(cc), hash2(cc + 17.0)) * 0.8 + 0.1;
-      let d = length(g - cc - o);
-      if (d < best) { best = d; id = hash2(cc + 3.1); }
-    }
-  }
-  return vec2f(best, id);
+fn rockNormal(p: vec3f, e: f32) -> vec3f {
+  let k = vec2f(1.0, -1.0);
+  return normalize(k.xyy * rockSDF(p + k.xyy * e) + k.yyx * rockSDF(p + k.yyx * e) +
+                   k.yxy * rockSDF(p + k.yxy * e) + k.xxx * rockSDF(p + k.xxx * e));
 }
-
-fn rockAt(hc: f32, y: f32, p: vec2f) -> vec4f {
-  let streak = gnoise(vec2f(hc * 0.06, y * 0.012)) * 0.5 + 0.5;
-  let stain = gnoise(vec2f(hc * 0.02, y * 0.03) + 4.0) * 0.5 + 0.5;
-  let blotch = gnoise(vec2f(hc * 0.012, y * 0.01) + 11.0) * 0.5 + 0.5;
-  var rock = mix(vec3f(0.80, 0.79, 0.75), vec3f(0.74, 0.55, 0.38), smoothstep(0.5, 0.85, stain));
-  rock = mix(rock, vec3f(0.36, 0.36, 0.35), smoothstep(0.5, 0.92, streak) * 0.75);
-  rock = mix(rock, vec3f(0.58, 0.56, 0.52), smoothstep(0.55, 0.8, blotch) * 0.6);
-  rock *= 0.8 + 0.35 * (gnoise(vec2f(hc * 0.6, y * 0.6)) * 0.5 + 0.5);
-  return vec4f(rock, 1.0);
-}
-fn rockBump(hc: f32, y: f32) -> vec3f {
-  return vec3f(gnoise(vec2f(hc * 0.21, y * 0.13) + 1.0) + 0.5 * gnoise(vec2f(hc * 0.9, y * 0.7) + 5.0),
-               0.4 * gnoise(vec2f(hc * 0.3, y * 0.3) + 9.0),
-               gnoise(vec2f(hc * 0.21, y * 0.13) + 3.0) + 0.5 * gnoise(vec2f(hc * 0.9, y * 0.7) + 7.0));
-}
-
-fn softShadow(p: vec3f, L: vec3f) -> f32 {
+fn rockShadow(p: vec3f, L: vec3f) -> f32 {
   if (L.y <= 0.0) { return 0.0; }
   var s = 1.0;
-  var t = 2.0;
-  for (var i = 0; i < 20; i++) {
-    let q = p + L * t;
-    if (q.y > 330.0) { break; }
-    let dh = q.y - terrainBase(q.xz);
-    s = min(s, clamp(dh / (t * 0.08) + 0.5, 0.0, 1.0));
-    if (s <= 0.0) { break; }
-    t *= 1.32;
+  var t = 0.6;
+  for (var i = 0; i < 28; i++) {
+    let d = rockShape(p + L * t);
+    s = min(s, clamp(8.0 * d / t, 0.0, 1.0));
+    if (s < 0.01 || t > 160.0) { break; }
+    t += clamp(d, 0.4, 12.0);
   }
   return s;
 }
-
-@fragment fn fs(in: VO) -> @location(0) vec4f {
-  let p = in.xz;
-  let e = 0.6;
-  let h = terrainH(p);
-  let hx = terrainH(p + vec2f(e, 0.0)) - terrainH(p - vec2f(e, 0.0));
-  let hz = terrainH(p + vec2f(0.0, e)) - terrainH(p - vec2f(0.0, e));
-  var n = normalize(vec3f(-hx, 2.0 * e, -hz));
-  let world = in.rel + F.camPos.xyz;
-  let dist = length(in.rel);
-  let si = shoreInfo(p);
-  let u = si.x;
-  let bw = si.y * 55.0;
-
-  // ---- materials ----
-  // limestone: pale cream with orange-grey run-off stains in vertical streaks
-  // rock is textured along the cliff face from two directions, blended by the face direction,
-  // so no face shows stretched streaks
-  let wx = abs(n.z) / (abs(n.x) + abs(n.z) + 1e-4);
-  let ra = rockAt(p.x, world.y, p);
-  let rb = rockAt(p.y + 500.0, world.y, p);
-  var rock = mix(rb.rgb, ra.rgb, wx);
-  let rjA = rockBump(p.x, world.y);
-  let rjB = rockBump(p.y + 500.0, world.y);
-  let rk = mix(rjB, rjA, wx);
-  n = normalize(n + rk * 0.55 * (1.0 - smoothstep(0.75, 0.95, n.y)));
-  // scrub (macchia) on gentle slopes high up
-  let veg = smoothstep(0.5, 0.72, n.y) * smoothstep(8.0, 20.0, world.y) * smoothstep(-0.35, 0.15, gnoise(p * 0.06) + 0.25 * gnoise(p * 0.5));
-  let scrub = mix(vec3f(0.10, 0.14, 0.06), vec3f(0.22, 0.24, 0.12), smoothstep(-0.3, 0.5, gnoise(p * 0.3)));
-  var alb = mix(rock, scrub, veg);
-  // pebble beach
-  let onBeach = smoothstep(bw + 6.0, bw - 2.0, u) * step(-30.0, u) * (1.0 - smoothstep(8.0, 16.0, world.y));
-  if (onBeach > 0.0) {
-    let pb = pebbles(p);
-    let stone = vec3f(0.95, 0.94, 0.90) * (0.85 + 0.2 * pb.y) * mix(vec3f(1.0), vec3f(1.0, 0.92, 0.86), step(0.8, pb.y));
-    let gap = smoothstep(0.25, 0.55, pb.x);
-    let peb = mix(stone, stone * 0.55, gap * 0.6);
-    // wet band along the waterline
-    let wet = 1.0 - smoothstep(0.3, 1.4, world.y);
-    alb = mix(alb, peb * mix(1.0, 0.55, wet), onBeach);
-    n = normalize(n + vec3f(gnoise(p * 9.0), 0.0, gnoise(p * 9.0 + 2.0)) * 0.12 * onBeach);
+fn rockAO(p: vec3f, n: vec3f) -> f32 {
+  var o = 0.0;
+  var w = 1.0;
+  for (var i = 1; i <= 5; i++) {
+    let h = f32(i) * 1.6;
+    o += w * (h - rockShape(p + n * h));
+    w *= 0.6;
   }
+  return clamp(1.0 - o * 0.09, 0.15, 1.0);
+}
+
+@fragment fn fs(in: VO) -> FO {
+  var o: FO;
+  if (!beachOn()) { discard; }
+  let ro = F.camPos.xyz;
+  let rd = normalize(F.camFwd.xyz + in.ndc.x * F.camRight.xyz + in.ndc.y * F.camUp.xyz);
+  // clip the march to the rocks' box
+  let inv = 1.0 / rd;
+  let t0 = (BMIN - ro) * inv;
+  let t1 = (BMAX - ro) * inv;
+  let tn = max(max(min(t0.x, t1.x), min(t0.y, t1.y)), min(t0.z, t1.z));
+  let tf = min(min(max(t0.x, t1.x), max(t0.y, t1.y)), max(t0.z, t1.z));
+  if (tf < max(tn, 0.0)) { discard; }
+  var t = max(tn, 0.0);
+  var hit = false;
+  for (var i = 0; i < 160; i++) {
+    let p = ro + rd * t;
+    let d = rockSDF(p);
+    if (d < 0.0015 * t + 0.01) { hit = true; break; }
+    t += d * 0.75;
+    if (t > tf) { break; }
+  }
+  if (!hit) { discard; }
+  let p = ro + rd * t;
+  if (p.y < -0.5) { discard; }                      // under water: the sea draws it
+  var n = rockNormal(p, 0.004 * t + 0.02);
+  let fl = vec3f(vnoise(vec3f(p.x * 1.1, p.y * 0.08, p.z * 1.1)), 0.0, vnoise(vec3f(p.x * 1.1 + 7.0, p.y * 0.08, p.z * 1.1)));
+  n = normalize(n + fl * 0.35 * (1.0 - abs(n.y)));
+
+  // ---- limestone, as in the photo: bright white-grey, grey streaks, rust under the arch ----
+  let streak = fbm3(vec3f(p.x * 0.4, p.y * 0.035, p.z * 0.4), 4);
+  let blot = fbm3(p * 0.07 + 3.0, 3);
+  var alb = vec3f(0.55, 0.55, 0.53);
+  alb = mix(alb, vec3f(0.24, 0.26, 0.27), smoothstep(-0.05, 0.3, streak) * 0.9);
+  alb = mix(alb, vec3f(0.46, 0.47, 0.48), smoothstep(-0.1, 0.3, blot) * 0.5);
+  let under = smoothstep(0.1, -0.5, n.y);
+  alb = mix(alb, vec3f(0.45, 0.30, 0.20), under * smoothstep(-0.2, 0.4, fbm3(p * 0.15, 2)) * 0.8);
+  alb *= 0.85 + 0.25 * fbm3(p * 0.9, 2);
+  // dark band where the sea wets the rock
+  alb = mix(alb * vec3f(0.55, 0.56, 0.55), alb, smoothstep(0.2, 1.4, p.y + 0.4 * vnoise(p * 0.5)));
+  // scrub and pines on the slopes up top
+  let vegN = fbm3(p * 0.12 + 7.0, 3);
+  let veg = max(smoothstep(-0.15, 0.3, n.y) * smoothstep(24.0, 34.0, p.y), smoothstep(0.35, 0.7, n.y) * smoothstep(12.0, 18.0, p.y)) * smoothstep(-0.25, 0.05, vegN);
+  let green = mix(vec3f(0.06, 0.11, 0.04), vec3f(0.16, 0.24, 0.08), smoothstep(-0.2, 0.5, fbm3(p * 0.5, 2)));
+  alb = mix(alb, green, veg);
 
   // ---- light ----
   let L = F.sunDir.xyz;
-  // rock keeps more of its own colour: only part of the surreal red cast reaches it
-  let sunE = mix(sampleTrans(camR(), F.sunDir.y) * F.sunDir.w, sunIlluminance(), 0.45);
-  let shadow = softShadow(world + n * 0.5, L);
-  let ndl = max(dot(n, L), 0.0);
+  let sunE = sunIlluminance();
+  let sh = rockShadow(p + n * 0.3, L);
+  let ao = rockAO(p, n);
   let skyUp = skyAtmo(vec3f(0.0, 1.0, 0.0));
-  let skyN = skyAtmo(normalize(vec3f(n.x, max(n.y, 0.0) + 0.25, n.z)));
-  let ao = 0.55 + 0.45 * n.y;
-  var col = alb * (sunE * ndl * shadow * 0.318 + (skyUp * 0.6 + skyN * 0.6) * ao * (1.0 + 0.5 * onBeach));
+  let skyN = skyAtmo(normalize(vec3f(n.x, max(n.y, 0.0) + 0.2, n.z)));
+  // light bounced up from the bright turquoise water
+  let bounce = vec3f(0.05, 0.22, 0.24) * sunE * max(L.y, 0.0) * 0.12 * smoothstep(0.3, -0.6, n.y);
+  var col = alb * (sunE * max(dot(n, L), 0.0) * sh * 0.318 + (skyUp * 0.55 + skyN * 0.55) * ao + bounce);
 
-  // ---- aerial perspective (same as the sea) ----
-  let V = -in.rel / dist;
+  let dist = t;
   let T = exp(-max(F.fogExt.rgb, vec3f(F.fogExt.w)) * dist);
-  let hzv = normalize(vec3f(-V.x, 0.002, -V.z));
-  col = col * T + skyAtmo(hzv) * (1.0 - T);
-  return vec4f(col, 1.0);
+  let hz = normalize(vec3f(rd.x, 0.002, rd.z));
+  col = col * T + skyAtmo(hz) * (1.0 - T);
+
+  let clip = F.viewProj * vec4f(p - F.camPos.xyz, 1.0);
+  o.col = vec4f(col, 1.0);
+  o.depth = clip.z / clip.w;
+  return o;
 }
 `;
