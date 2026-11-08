@@ -235,11 +235,20 @@ const FOAM_SWELL_W: f32 = 0.3;
     // Goloritzé water: very clear, red absorbed within metres, so a white sand bed shows
     // vivid turquoise; seagrass and rock patches show as dark blue-green shapes
     let depthW = coveDepth(xz);
-    let patchN = gnoise(xz * 0.06 + 2.0) * 0.6 + gnoise(xz * 0.17 + 5.0) * 0.28 + gnoise(xz * 0.5 + 9.0) * 0.12;
+    // the waves bend the view of the seabed (refraction wobble)
+    let bxz = xz - sl * depthW * 0.6;
+    // sun ripples (caustics) dancing on the sand: a warped ridged pattern, sharper in the shallows
+    let tc = F.camPos.w;
+    let wq = bxz * 0.55 + 0.9 * vec2f(gnoise(bxz * 0.21 + vec2f(tc * 0.22, 1.3)), gnoise(bxz * 0.21 + vec2f(4.7, -tc * 0.19)));
+    let c1 = 1.0 - abs(gnoise(wq + vec2f(tc * 0.35, tc * 0.1)) * 2.4);
+    let c2 = 1.0 - abs(gnoise(wq * 1.9 + vec2f(-tc * 0.3, tc * 0.25) + 7.0) * 2.4);
+    let caustic = pow(clamp(c1, 0.0, 1.0), 7.0) + 0.6 * pow(clamp(c2, 0.0, 1.0), 9.0);
+    let causK = 1.0 + 2.4 * caustic * exp(-depthW * 0.12) * max(Ld.y, 0.0);
+    let patchN = gnoise(bxz * 0.06 + 2.0) * 0.6 + gnoise(bxz * 0.17 + 5.0) * 0.28 + gnoise(bxz * 0.5 + 9.0) * 0.12;
     let seagrass = smoothstep(0.1, 0.22, patchN);
     let bedAlb = mix(vec3f(0.50, 0.50, 0.46), vec3f(0.04, 0.06, 0.04), seagrass);
     let Tw = exp(-depthW * 2.0 * vec3f(0.36, 0.042, 0.05));
-    let bedE = sunE * max(Ld.y, 0.0) * 0.318 + skyUp * 0.9;
+    let bedE = sunE * max(Ld.y, 0.0) * 0.318 * causK + skyUp * 0.9;
     let inscatter = vec3f(0.0, 0.010, 0.022) * (skyHemi * 1.6 + sunE * max(Ld.y, 0.0) * 0.8);
     body = bedAlb * bedE * Tw + inscatter * (1.0 - exp(-depthW * 0.08));
   }
