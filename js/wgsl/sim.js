@@ -383,7 +383,8 @@ fn main(@builtin(global_invocation_id) id: vec3u) {
       let uv = p * U.cascInvL[c >> 2u][c & 3u];
       let d = textureSampleLevel(derivTex, samp, uv, c, lod);
       let a = textureSampleLevel(dispTex, samp, uv, c, lod);
-      jxx += d.z; jzz += d.w; jxz += a.w;
+      let fk = select(1.0, 0.3, c == 0u);   // long swell barely makes foam (Fuzzzy fix)
+      jxx += d.z * fk; jzz += d.w * fk; jxz += a.w * fk;
     }
   }
   let J = (1.0 + jxx) * (1.0 + jzz) - jxz * jxz;
