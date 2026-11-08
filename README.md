@@ -2,6 +2,8 @@
 
 Based on [web-ocean](https://github.com/Noniv/web-ocean) by Noniv (MIT). Fuzzzy Core change: the visible sky is warmed toward the brand's sun red and warm paper, strongest overhead and fading out at the horizon; the sea and its reflections are untouched. Strength is the `skyTint` setting (panel slider "Fuzzzy sky tint", or `?skyTint=0` for the original sky).
 
+Also: a large surreal red sun in Fuzzzy Core sun red with a red glow and red-cast sunlight (`sunRed`, slider "Fuzzzy red sun", 0 = natural sun), and a rough sea by default (wind 13 m/s, 3.6 m swell of 190 m wavelength, choppiness 1.35, sun at 5 degrees, exposure 1.05).
+
 ## Original readme
 
 A real-time ocean renderer written from scratch on WebGPU, with no engine or rendering library. It draws a sunset sea with simulated waves, whitecaps, sun glitter, and a physically based sky with clouds. You fly around it with a free camera.
