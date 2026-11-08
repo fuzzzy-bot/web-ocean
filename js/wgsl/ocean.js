@@ -1,7 +1,7 @@
 // Ocean surface + sky background rendering.
 import { FRAME_WGSL, ATMO_CORE_WGSL, ENV_MIPS, ENV_SIZE, N, CASCADES } from './common.js';
 import { SKY_RENDER_FUNCS, SKY_CLOUD_FUNCS } from './sky.js';
-import { TERRAIN_FN } from './terrain.js';
+import { ROCK_FN } from './terrain.js';
 
 const RENDER_BINDINGS = /* wgsl */ `
 @group(0) @binding(0) var<uniform> F: Frame;
@@ -49,7 +49,7 @@ export const OCEAN = FRAME_WGSL + ATMO_CORE_WGSL + RENDER_BINDINGS + /* wgsl */ 
 @group(0) @binding(9) var sampR: sampler;
 @group(0) @binding(10) var foamWorld: texture_2d_array<f32>;
 @group(0) @binding(11) var<storage, read> sunVis: array<f32, 4>;
-` + SKY_RENDER_FUNCS + TERRAIN_FN + /* wgsl */ `
+` + SKY_RENDER_FUNCS + ROCK_FN + /* wgsl */ `
 const ENV_MAXMIP: f32 = ${ENV_MIPS - 1}.0;
 const ENV_TEXELS_PER_RAD: f32 = ${ENV_SIZE}.0 / 1.5708;
 const TEX_N: f32 = ${N}.0;
@@ -79,13 +79,6 @@ struct VSOut {
     if (lod < 8.0) {
       disp += textureSampleLevel(dispTex, sampR, xz * F.cascInvL[c >> 2u][c & 3u], c, lod).xyz;
     }
-  }
-  if (beachOn() && islandMask(xz) > 0.0) {
-    // waves lose height over the shallows and break as surf on the beach (Fuzzzy island)
-    let dep = -terrainBase(xz);
-    disp *= mix(0.12, 1.0, smoothstep(0.0, 16.0, dep));
-    let si = shoreInfo(xz);
-    disp.y += 0.7 * pow(surfWave(si.x), 4.0) * surfZone(si.x);
   }
   var o: VSOut;
   let world = vec3f(xz.x + disp.x, disp.y, xz.y + disp.z);
@@ -121,9 +114,6 @@ fn foamPattern(xz: vec2f, t: f32) -> f32 {
 }
 
 const FOAM_SWELL_W: f32 = 0.3;
-// surf rolling towards the shore: x = distance inland from the waterline (negative at sea)
-fn surfWave(u: f32) -> f32 { return 0.5 + 0.5 * sin(u * 0.26 - F.camPos.w * 1.7); }
-fn surfZone(u: f32) -> f32 { return smoothstep(-55.0, -10.0, u) * (1.0 - smoothstep(-1.5, 2.0, u)); }
 @fragment fn fs(in: VSOut) -> @location(0) vec4f {
   let xz = in.xz;
   var s = vec2f(0.0);
@@ -210,21 +200,24 @@ fn surfZone(u: f32) -> f32 { return smoothstep(-55.0, -10.0, u) * (1.0 - smooths
   let envLod = clamp(log2(max(2.0 * sig * ENV_TEXELS_PER_RAD, 1.0)), 0.0, ENV_MAXMIP);
   var refl = textureSampleLevel(envCube, sampC, R, envLod).rgb;
   let wpos = in.rel + F.camPos.xyz;
-  if (beachOn() && islandMask(xz) > 0.0) {
-    // the island's cliffs reflected in the water: march the reflected ray over the heightfield
-    var t = 3.0;
-    var hit = 0.0;
-    for (var i = 0; i < 16; i++) {
-      let q = wpos + R * t;
-      if (q.y > 320.0) { break; }
-      if (q.y < terrainBase(q.xz)) { hit = 1.0; break; }
-      t *= 1.33;
+  if (beachOn() && R.y > 0.0) {
+    // the headland and the arch reflected in the water (sphere-traced against the rock model)
+    var t = 0.5;
+    var hit = false;
+    for (var i = 0; i < 40; i++) {
+      let d = rockShape(wpos + R * t);
+      if (d < 0.002 * t + 0.2) { hit = true; break; }
+      t += d;
+      if (t > 400.0) { break; }
     }
-    if (hit > 0.0) {
-      let rockE = mix(sampleTrans(camR(), F.sunDir.y) * F.sunDir.w, sunE, 0.45);
-      let cliffCol = vec3f(0.78, 0.74, 0.66) * (rockE * max(-Ld.z * 0.7 + Ld.y * 0.3, 0.0) * 0.318 + skyUp * 1.1);
+    if (hit) {
+      let q = wpos + R * t;
+      let veg = smoothstep(14.0, 26.0, q.y);
+      let rockC = mix(vec3f(0.52, 0.52, 0.50), vec3f(0.08, 0.14, 0.05), veg * 0.8);
+      let cliffCol = rockC * (sunE * max(Ld.y, 0.0) * 0.318 * 0.8 + skyUp * 1.0);
       let Tr = exp(-max(F.fogExt.rgb, vec3f(F.fogExt.w)) * t);
-      refl = mix(refl, cliffCol * Tr + refl * (1.0 - Tr), 0.92);
+      // the rock's own shading varies a lot; keep the mirrored rock a little softer than the rock
+      refl = mix(refl, cliffCol * Tr + refl * (1.0 - Tr), 0.8);
     }
   }
   let NdV = max(dot(nV, V), 0.0);
@@ -238,15 +231,17 @@ fn surfZone(u: f32) -> f32 { return smoothstep(-55.0, -10.0, u) * (1.0 - smooths
   let NdL = max(dot(nrm, Ld), 0.0);
   // upwelling light is diffuse: light it with smooth terms only (no per-pixel normal noise)
   var body = F.waterCol.rgb * (skyHemi * 1.6 + sunE * max(Ld.y, 0.0) * 0.8);
-  var shore = vec2f(-1000.0, 0.0);
-  if (beachOn() && islandMask(xz) > 0.0) {
-    // clear Goloritzé shallows: turquoise water over a white pebble bed
-    shore = shoreInfo(xz);
-    let depthW = max(-terrainBase(xz), 0.0);
-    let Tw = exp(-depthW * 2.0 * vec3f(0.30, 0.055, 0.045));
-    let bedLit = vec3f(0.80, 0.78, 0.70) * (sunE * max(Ld.y, 0.0) * 0.318 + skyUp * 0.9) * Tw;
-    let turq = vec3f(0.02, 0.32, 0.28) * (skyHemi * 1.6 + sunE * max(Ld.y, 0.0) * 0.8);
-    body = mix(body, bedLit + turq * (1.0 - Tw.g), smoothstep(40.0, 2.0, depthW));
+  if (beachOn()) {
+    // Goloritzé water: very clear, red absorbed within metres, so a white sand bed shows
+    // vivid turquoise; seagrass and rock patches show as dark blue-green shapes
+    let depthW = coveDepth(xz);
+    let patchN = gnoise(xz * 0.06 + 2.0) * 0.6 + gnoise(xz * 0.17 + 5.0) * 0.28 + gnoise(xz * 0.5 + 9.0) * 0.12;
+    let seagrass = smoothstep(0.1, 0.22, patchN);
+    let bedAlb = mix(vec3f(0.50, 0.50, 0.46), vec3f(0.04, 0.06, 0.04), seagrass);
+    let Tw = exp(-depthW * 2.0 * vec3f(0.36, 0.042, 0.05));
+    let bedE = sunE * max(Ld.y, 0.0) * 0.318 + skyUp * 0.9;
+    let inscatter = vec3f(0.0, 0.010, 0.022) * (skyHemi * 1.6 + sunE * max(Ld.y, 0.0) * 0.8);
+    body = bedAlb * bedE * Tw + inscatter * (1.0 - exp(-depthW * 0.08));
   }
   // light transmitted through the thin upper part of backlit crests
   let crest = clamp((in.height - 0.05) / 0.9, 0.0, 1.0);
@@ -288,14 +283,6 @@ fn surfZone(u: f32) -> f32 { return smoothstep(-55.0, -10.0, u) * (1.0 - smooths
   foamMask *= mix(1.0, 0.3, smoothstep(40.0, 450.0, dist));
   // freshly broken crests: dense, almost opaque core
   foamMask = max(foamMask, smoothstep(0.35, 0.9, fwl.g) * smoothstep(0.25, 0.6, pat + 0.25) * 0.95 * mix(1.0, 0.4, smoothstep(40.0, 450.0, dist)));
-  if (shore.x > -999.0) {
-    // breaking surf and the wash along the waterline (and against the cliff feet)
-    let u = shore.x;
-    let sw = surfWave(u);
-    let breaker = smoothstep(0.8, 0.96, sw) * surfZone(u) * mix(0.6, 1.0, shore.y) * 1.2;
-    let wash = smoothstep(-14.0, -0.8, u) * (1.0 - smoothstep(-0.5, 2.5, u)) * (0.55 + 0.45 * sin(u * 0.13 - F.camPos.w * 0.85));
-    foamMask = max(foamMask, clamp(breaker + wash, 0.0, 1.0) * smoothstep(0.15, 0.65, pat + 0.3));
-  }
   // submerged bubbles brighten and tint the water just beneath foam
   body += F.sssCol.rgb * (sunE * 0.05 + ambient * 0.35) * clamp(cover, 0.0, 1.0);
   body += vec3f(0.10, 0.32, 0.30) * skyUp * fwl.g * 0.35;
