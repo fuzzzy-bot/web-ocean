@@ -1,4 +1,8 @@
-# web-ocean
+# The sea (Fuzzzy Effects)
+
+Based on [web-ocean](https://github.com/Noniv/web-ocean) by Noniv (MIT). Fuzzzy Core change: the visible sky is warmed toward the brand's sun red and warm paper, strongest overhead and fading out at the horizon; the sea and its reflections are untouched. Strength is the `skyTint` setting (panel slider "Fuzzzy sky tint", or `?skyTint=0` for the original sky).
+
+## Original readme
 
 A real-time ocean renderer written from scratch on WebGPU, with no engine or rendering library. It draws a sunset sea with simulated waves, whitecaps, sun glitter, and a physically based sky with clouds. You fly around it with a free camera.
 
