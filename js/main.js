@@ -18,16 +18,16 @@ const TU = GPUTextureUsage;
 // Tunable parameters (UI panel edits these)
 // ----------------------------------------------------------------------------------------
 export const P = {
-  windSpeed: 13.0,      // m/s at 10 m
+  windSpeed: 12.0,      // m/s at 10 m
   windDir: 118,        // deg, direction waves travel (90 = towards +Z, i.e. towards the viewer)
   fetchKm: 90,
-  swellHs: 3.6,        // m significant height
+  swellHs: 4.0,        // m significant height
   swellDir: 94,
-  swellLength: 190,    // m peak wavelength
-  swellSpread: 48,     // cos^2s exponent
-  choppy: 1.35,
+  swellLength: 220,    // m peak wavelength
+  swellSpread: 90,     // cos^2s exponent
+  choppy: 1.2, 
   turbidity: 1.6,     // water body brightness (coastal sediment / plankton)
-  foam: 1.0,
+  foam: 1.4,
   sunElev: 5.0,        // deg
   sunAzim: 4,          // deg (0 = straight ahead of the start view)
   exposure: 1.05,

@@ -581,7 +581,8 @@ fn main(@builtin(global_invocation_id) id: vec3u) {
       let uv = p * U.cascInvL[c >> 2u][c & 3u];
       let d = textureSampleLevel(derivTex, samp, uv, c, lod);
       let a = textureSampleLevel(dispTex, samp, uv, c, lod);
-      jxx += d.z; jzz += d.w; jxz += a.w;
+      let fk = select(1.0, 0.3, c == 0u);   // long swell barely makes foam (Fuzzzy fix)
+      jxx += d.z * fk; jzz += d.w * fk; jxz += a.w * fk;
     }
   }
   let J = (1.0 + jxx) * (1.0 + jzz) - jxz * jxz;
@@ -1313,12 +1314,16 @@ fn foamPattern(xz: vec2f, t: f32) -> f32 {
   return a * 0.78 + b * 0.22;
 }
 
+const FOAM_SWELL_W: f32 = 0.3;
 @fragment fn fs(in: VSOut) -> @location(0) vec4f {
   let xz = in.xz;
   var s = vec2f(0.0);
   var jxx = 0.0;
   var jzz = 0.0;
   var jxz = 0.0;
+  // foam Jacobian: the long swell (largest cascade) barely counts, so its even crests do not
+  // turn into long straight lines of foam; whitecaps come from the wind sea (Fuzzzy fix)
+  var fxx = 0.0; var fzz = 0.0; var fxz = 0.0;
   var cov = vec3f(0.0);
   // wind gusts ("cat's paws"): patches where the short ripples are stronger or calmer
   let gustN = textureSample(foamTex, sampR, xz * 0.011 + F.windP[0].xy * (F.camPos.w * 0.0004)).b;
@@ -1333,6 +1338,8 @@ fn foamPattern(xz: vec2f, t: f32) -> f32 {
     jxx += dv.z;
     jzz += dv.w;
     jxz += av.w;
+    let fk = select(1.0, FOAM_SWELL_W, c == 0u);
+    fxx += dv.z * fk; fzz += dv.w * fk; fxz += av.w * fk;
     cov += vec3f(max(mv.x - dv.x * dv.x, 0.0), max(mv.y - dv.y * dv.y, 0.0), mv.z - dv.x * dv.y);
   }
   let dist = length(in.rel);
@@ -1354,6 +1361,7 @@ fn foamPattern(xz: vec2f, t: f32) -> f32 {
   let aa = vec3f(dsx.x * dsx.x + dsy.x * dsy.x, dsx.y * dsx.y + dsy.y * dsy.y, dsx.x * dsx.y + dsy.x * dsy.y) * 0.5;
   cov += aa * min(1.0, 0.03 / max(max(aa.x, aa.y), 1e-8));
   let J = (1.0 + jxx) * (1.0 + jzz) - jxz * jxz;
+  let Jf = (1.0 + fxx) * (1.0 + fzz) - fxz * fxz;
 
   let sunE = sunIlluminance() * sunVis[0];
   let skyUp = textureSampleLevel(envCube, sampC, vec3f(0.0, 1.0, 0.0), ENV_MAXMIP).rgb;
@@ -1416,27 +1424,33 @@ fn foamPattern(xz: vec2f, t: f32) -> f32 {
   let dc = abs(xz - F.camPos.xz);
   let cheb = max(dc.x, dc.y);
   let w0 = 1.0 - smoothstep(0.30 * F.lodP.z, 0.45 * F.lodP.z, cheb);
-  let w1 = 1.0 - smoothstep(0.30 * F.lodP.w, 0.45 * F.lodP.w, cheb);
+  let w1 = 1.0 - smoothstep(0.22 * F.lodP.w, 0.46 * F.lodP.w, cheb);
   let fw0 = textureSample(foamWorld, sampR, xz / F.lodP.z, 0u);
   let fw1 = textureSample(foamWorld, sampR, xz / F.lodP.w, 1u);
   let fwl = mix(fw1, fw0, w0) * w1;
-  let fresh = clamp((F.foamP.x - J) * F.foamP.y, 0.0, 1.0);
-  var cover = clamp((max(fwl.r, fresh * (1.0 - w1 * 0.7)) + fwl.g * 0.6) * F.foamP.z, 0.0, 1.5);
+  let fresh = clamp((F.foamP.x - Jf) * F.foamP.y, 0.0, 1.0);
+  // beyond the clipmaps only instantaneous crest foam is known; keep its weight close to the
+  // near-field mix so no band appears where the clipmaps end (Fuzzzy fix)
+  var cover = clamp((max(fwl.r, fresh * (0.3 + 0.15 * (1.0 - w1))) + fwl.g * 0.6) * F.foamP.z, 0.0, 1.5);
   // aged foam breaks into wind-aligned streaks; fresh crest foam stays dense
   let wd = F.windP[0].xy;
   let ws = vec2f(dot(xz, wd), dot(xz, vec2f(-wd.y, wd.x)));
   let streak = textureSample(foamTex, sampR, ws * vec2f(0.035, 0.11)).a;
   let freshK = clamp(fwl.g * 2.0 + fresh, 0.0, 1.0);
-  cover *= mix(smoothstep(0.25, 0.75, streak) * 1.5, 1.0, freshK);
+  // softer streaks: aged foam thins into lanes without the scratchy hatching (Fuzzzy fix)
+  cover *= mix(mix(smoothstep(0.15, 0.85, streak) * 1.3, 1.0, 0.35), 1.0, freshK);
   let pat = foamPattern(xz, F.camPos.w);
   let fw = fwidth(pat) + 0.03;
   // soft threshold: thin foam is a translucent film, dense foam is opaque white
   // dense foam has crisp edges, thin decaying foam a soft translucent margin
-  let soft = 0.04 + 0.14 * (1.0 - clamp(cover, 0.0, 1.0));
+  let soft = 0.08 + 0.16 * (1.0 - clamp(cover, 0.0, 1.0));   // softer foam edges (Fuzzzy fix)
   let fm = smoothstep(1.0 - cover - fw - soft, 1.0 - cover + fw + soft, pat);
   var foamMask = clamp(fm * smoothstep(0.0, 0.5, cover), 0.0, 1.0) * (0.68 + 0.32 * smoothstep(0.3, 0.9, cover));
+  // far away many small whitecaps average into one pixel and read as a solid white sheet;
+  // thin them with distance so the far sea shows a light speckle instead (Fuzzzy fix)
+  foamMask *= mix(1.0, 0.3, smoothstep(40.0, 450.0, dist));
   // freshly broken crests: dense, almost opaque core
-  foamMask = max(foamMask, smoothstep(0.35, 0.9, fwl.g) * smoothstep(0.25, 0.6, pat + 0.25) * 0.95);
+  foamMask = max(foamMask, smoothstep(0.35, 0.9, fwl.g) * smoothstep(0.25, 0.6, pat + 0.25) * 0.95 * mix(1.0, 0.4, smoothstep(40.0, 450.0, dist)));
   // submerged bubbles brighten and tint the water just beneath foam
   body += F.sssCol.rgb * (sunE * 0.05 + ambient * 0.35) * clamp(cover, 0.0, 1.0);
   body += vec3f(0.10, 0.32, 0.30) * skyUp * fwl.g * 0.35;
@@ -1651,16 +1665,16 @@ const TU = GPUTextureUsage;
 // Tunable parameters (UI panel edits these)
 // ----------------------------------------------------------------------------------------
 const P = {
-  windSpeed: 13.0,      // m/s at 10 m
+  windSpeed: 12.0,      // m/s at 10 m
   windDir: 118,        // deg, direction waves travel (90 = towards +Z, i.e. towards the viewer)
   fetchKm: 90,
-  swellHs: 3.6,        // m significant height
+  swellHs: 4.0,        // m significant height
   swellDir: 94,
-  swellLength: 190,    // m peak wavelength
-  swellSpread: 48,     // cos^2s exponent
-  choppy: 1.35,
+  swellLength: 220,    // m peak wavelength
+  swellSpread: 90,     // cos^2s exponent
+  choppy: 1.2, 
   turbidity: 1.6,     // water body brightness (coastal sediment / plankton)
-  foam: 1.0,
+  foam: 1.4,
   sunElev: 5.0,        // deg
   sunAzim: 4,          // deg (0 = straight ahead of the start view)
   exposure: 1.05,
