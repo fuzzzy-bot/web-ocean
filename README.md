@@ -8,6 +8,8 @@ Night: the "Time of day" slider (`timeOfDay`, 0 to 1) sets the red sun into a da
 
 Wave fixes: the long swell no longer draws straight lines of foam along its crests (whitecaps come from the wind sea), foam streaks are softer, foam edges are less blotchy, and far foam thins with distance instead of merging into a white sheet. Defaults: wind 12 m/s, swell 4 m at 220 m and long-crested, choppiness 1.2, foam 1.4.
 
+Island beach (`beach=1`, or the "Island beach" switch in the panel): a cove modelled on Cala Goloritzé in Baunei, Sardinia. A white pebble beach in a crescent cove at the mouth of a gorge, limestone cliffs with ledges, stains and scrub, and the needle at the right end of the beach (143 m, casting its shadow on the cliff). Near the shore the water turns clear turquoise over the pebble bed, waves lose height in the shallows and break as surf with a wash along the waterline, and the cliffs are reflected in the cove. Turning it on moves the camera out to sea, looking into the cove with the sunset behind; it works at night too. Source: `js/wgsl/terrain.js`.
+
 ## Original readme
 
 A real-time ocean renderer written from scratch on WebGPU, with no engine or rendering library. It draws a sunset sea with simulated waves, whitecaps, sun glitter, and a physically based sky with clouds. You fly around it with a free camera.
