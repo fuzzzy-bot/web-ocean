@@ -35,6 +35,7 @@ export const P = {
   clouds: 0.40,
   veil: 0.36,
   bloom: 0.10,
+  skyTint: 1.0,        // Fuzzzy Core warm sky tint (0 = original sky)
 };
 const CASC_L = [1103.0, 211.3, 39.7, 7.43, 1.393, 0.2617];
 
@@ -578,7 +579,7 @@ async function main() {
     f[16] = cam.x; f[17] = cam.y; f[18] = cam.z; f[19] = time;
     f[20] = rx * tanX; f[21] = ry * tanX; f[22] = rz * tanX; f[23] = 0;
     f[24] = ux * tanY; f[25] = uy * tanY; f[26] = uz * tanY; f[27] = 0;
-    f[28] = fx; f[29] = fy; f[30] = fz; f[31] = 0;
+    f[28] = fx; f[29] = fy; f[30] = fz; f[31] = P.skyTint;
     const se = P.sunElev * D2R, sa = P.sunAzim * D2R;
     f[32] = Math.sin(sa) * Math.cos(se); f[33] = Math.sin(se); f[34] = -Math.cos(sa) * Math.cos(se); f[35] = 14.0;
     f[36] = W; f[37] = H; f[38] = 1 / W; f[39] = 1 / H;
@@ -621,6 +622,7 @@ async function main() {
     ['veil', 'Cloud deck', 0, 1, 0.01, ''],
     ['exposure', 'Exposure', 0.1, 4, 0.01, ''],
     ['bloom', 'Bloom', 0, 0.3, 0.001, ''],
+    ['skyTint', 'Fuzzzy sky tint', 0, 2, 0.01, ''],
   ];
   for (const [key, label, min, max, step, kind] of SLIDERS) {
     const row = document.createElement('label');

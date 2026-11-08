@@ -391,6 +391,16 @@ fn sunDisk(dir: vec3f) -> vec3f {
   return rad * limb * edge * sampleTrans(camR(), max(dir.y, -0.01));
 }
 
+// Fuzzzy Core sky: warms the visible sky toward the brand's sun red and warm paper.
+// Applied to the sky you look at only; the sea and its reflections stay as they were.
+// Fades to nothing at the horizon so the sky still meets the sea without a seam.
+// Multiplier at full strength: rose-warm, luminance close to 1 so brightness holds.
+const FUZZZY_SKY_TINT: vec3f = vec3f(1.20, 0.91, 0.86);
+fn fuzzzySky(dir: vec3f, L: vec3f) -> vec3f {
+  let fz = F.camFwd.w * smoothstep(0.0, 0.35, dir.y);
+  return L * mix(vec3f(1.0), FUZZZY_SKY_TINT, fz);
+}
+
 fn skyRadiance(dirIn: vec3f, withSun: bool, pixAng: f32) -> vec3f {
   var dir = dirIn;
   dir.y = max(dir.y, 0.0005);
