@@ -6,6 +6,8 @@ Also: a large surreal red sun in Fuzzzy Core sun red with a red glow and red-cas
 
 Night: the "Time of day" slider (`timeOfDay`, 0 to 1) sets the red sun into a dark twilight, then raises a large silver moon with stars; the moon becomes the light, so the moon path on the water and moonlit clouds come from the same physics. Moon position: `moonAzim`, `moonElev`.
 
+Wave fixes: the long swell no longer draws straight lines of foam along its crests (whitecaps come from the wind sea), foam streaks are softer, foam edges are less blotchy, and far foam thins with distance instead of merging into a white sheet. Defaults: wind 12 m/s, swell 4 m at 220 m and long-crested, choppiness 1.2, foam 1.4.
+
 ## Original readme
 
 A real-time ocean renderer written from scratch on WebGPU, with no engine or rendering library. It draws a sunset sea with simulated waves, whitecaps, sun glitter, and a physically based sky with clouds. You fly around it with a free camera.
