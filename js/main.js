@@ -18,24 +18,25 @@ const TU = GPUTextureUsage;
 // Tunable parameters (UI panel edits these)
 // ----------------------------------------------------------------------------------------
 export const P = {
-  windSpeed: 7.0,      // m/s at 10 m
+  windSpeed: 13.0,      // m/s at 10 m
   windDir: 118,        // deg, direction waves travel (90 = towards +Z, i.e. towards the viewer)
   fetchKm: 90,
-  swellHs: 1.8,        // m significant height
+  swellHs: 3.6,        // m significant height
   swellDir: 94,
-  swellLength: 120,    // m peak wavelength
+  swellLength: 190,    // m peak wavelength
   swellSpread: 48,     // cos^2s exponent
-  choppy: 1.25,
+  choppy: 1.35,
   turbidity: 1.6,     // water body brightness (coastal sediment / plankton)
   foam: 1.0,
-  sunElev: 2.6,        // deg
+  sunElev: 5.0,        // deg
   sunAzim: 4,          // deg (0 = straight ahead of the start view)
-  exposure: 1.35,
+  exposure: 1.05,
   haze: 3.0,
   clouds: 0.40,
   veil: 0.36,
   bloom: 0.10,
-  skyTint: 1.0,        // Fuzzzy Core warm sky tint (0 = original sky)
+  skyTint: 1.0,
+  sunRed: 1.0,         // Fuzzzy surreal red sun (0 = natural sun)        // Fuzzzy Core warm sky tint (0 = original sky)
 };
 const CASC_L = [1103.0, 211.3, 39.7, 7.43, 1.393, 0.2617];
 
@@ -577,7 +578,7 @@ async function main() {
     const f = frameF;
     f.set(viewProj, 0);
     f[16] = cam.x; f[17] = cam.y; f[18] = cam.z; f[19] = time;
-    f[20] = rx * tanX; f[21] = ry * tanX; f[22] = rz * tanX; f[23] = 0;
+    f[20] = rx * tanX; f[21] = ry * tanX; f[22] = rz * tanX; f[23] = P.sunRed;
     f[24] = ux * tanY; f[25] = uy * tanY; f[26] = uz * tanY; f[27] = 0;
     f[28] = fx; f[29] = fy; f[30] = fz; f[31] = P.skyTint;
     const se = P.sunElev * D2R, sa = P.sunAzim * D2R;
@@ -623,6 +624,7 @@ async function main() {
     ['exposure', 'Exposure', 0.1, 4, 0.01, ''],
     ['bloom', 'Bloom', 0, 0.3, 0.001, ''],
     ['skyTint', 'Fuzzzy sky tint', 0, 2, 0.01, ''],
+    ['sunRed', 'Fuzzzy red sun', 0, 1, 0.01, ''],
   ];
   for (const [key, label, min, max, step, kind] of SLIDERS) {
     const row = document.createElement('label');

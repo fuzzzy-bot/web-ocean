@@ -191,8 +191,11 @@ fn sampleTrans(r: f32, mu: f32) -> vec3f {
   return textureSampleLevel(transLUT, sampC, transRMuToUV(r, mu), 0.0).rgb;
 }
 
+// Fuzzzy surreal red sun: strength in F.camRight.w (0 = natural sun).
+const FUZZZY_SUN_LIGHT: vec3f = vec3f(1.6, 0.32, 0.20);   // red cast of the sunlight (glitter, lighting)
+const FUZZZY_SUN_DISC: vec3f = vec3f(0.445, 0.019, 0.012); // Fuzzzy Core sun red #b2261d, linear
 fn sunIlluminance() -> vec3f {
-  return sampleTrans(camR(), F.sunDir.y) * F.sunDir.w;
+  return sampleTrans(camR(), F.sunDir.y) * F.sunDir.w * mix(vec3f(1.0), FUZZZY_SUN_LIGHT, F.camRight.w);
 }
 
 fn skyViewUV(dir: vec3f) -> vec2f {
@@ -379,17 +382,34 @@ fn cloudLayers(dir: vec3f, pixAng: f32, aa: vec2f, sunT: ptr<function, f32>) -> 
 }
 
 fn sunDisk(dir: vec3f) -> vec3f {
+  let red = F.camRight.w;
+  let R = SUN_ANG_R;
   let c = dot(dir, F.sunDir.xyz);
   let ang = sqrt(max(2.0 * (1.0 - c), 0.0));
   let pix = F.screen.w * 2.0 * length(F.camUp.xyz) * 0.75;
-  let edge = 1.0 - smoothstep(SUN_ANG_R - pix, SUN_ANG_R + pix, ang);
+  let edge = 1.0 - smoothstep(R - pix, R + pix, ang);
   if (edge <= 0.0) { return vec3f(0.0); }
-  let x = min(ang / SUN_ANG_R, 1.0);
+  let x = min(ang / R, 1.0);
   let mu = sqrt(max(1.0 - x * x, 0.0));
   let limb = vec3f(1.0) - vec3f(0.397, 0.503, 0.652) * (1.0 - mu);
   let rad = F.sunDir.w / (PI * SUN_ANG_R * SUN_ANG_R);
-  return rad * limb * edge * sampleTrans(camR(), max(dir.y, -0.01));
+  return rad * limb * edge * sampleTrans(camR(), max(dir.y, -0.01)) * (1.0 - clamp(red, 0.0, 1.0));
 }
+
+// Paints the surreal red sun over the sky (replaces the sky behind it, so it stays deep red).
+fn fuzzzySunOver(dir: vec3f, L: vec3f, sunT: f32) -> vec3f {
+  let red = clamp(F.camRight.w, 0.0, 1.0);
+  if (red <= 0.0) { return L; }
+  let R = SUN_ANG_R * (1.0 + FUZZZY_SUN_GROW);
+  let ang = sqrt(max(2.0 * (1.0 - dot(dir, F.sunDir.xyz)), 0.0));
+  let pix = F.screen.w * 2.0 * length(F.camUp.xyz) * 0.75;
+  let edge = 1.0 - smoothstep(R - pix, R + pix, ang);
+  let x = min(ang / R, 1.0);
+  let disc = FUZZZY_SUN_DISC * FUZZZY_SUN_BRIGHT * (0.75 + 0.25 * sqrt(max(1.0 - x * x, 0.0)));
+  return mix(L, disc, edge * red * mix(0.35, 1.0, sunT));
+}
+const FUZZZY_SUN_GROW: f32 = 9.0;
+const FUZZZY_SUN_BRIGHT: f32 = 1.4;
 
 // Fuzzzy Core sky: warms the visible sky toward the brand's sun red and warm paper.
 // Applied to the sky you look at only; the sea and its reflections stay as they were.
@@ -398,7 +418,9 @@ fn sunDisk(dir: vec3f) -> vec3f {
 const FUZZZY_SKY_TINT: vec3f = vec3f(1.20, 0.91, 0.86);
 fn fuzzzySky(dir: vec3f, L: vec3f) -> vec3f {
   let fz = F.camFwd.w * smoothstep(0.0, 0.35, dir.y);
-  return L * mix(vec3f(1.0), FUZZZY_SKY_TINT, fz);
+  // red glow around the red sun
+  let glow = pow(max(dot(dir, F.sunDir.xyz), 0.0), 4.0) * clamp(F.camRight.w, 0.0, 1.0);
+  return L * mix(vec3f(1.0), FUZZZY_SKY_TINT, fz) * mix(vec3f(1.0), vec3f(1.5, 0.33, 0.24), glow);
 }
 
 fn skyRadiance(dirIn: vec3f, withSun: bool, pixAng: f32) -> vec3f {
