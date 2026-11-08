@@ -42,6 +42,7 @@ export const P = {
   moonAzim: -8,        // deg, where the moon rises
   moonElev: 11,        // deg, highest moon height at full night
   saturation: 1.05,    // colour saturation of the final image
+  contrast: 1.06,      // tone contrast of the final image
   beach: 0,            // 1 = the arch at Cala Goloritzé, at midday in a calm clear cove
 };
 const NIGHT_EXPOSURE = 0.3;    // night is darker overall; the moon and stars carry it
@@ -506,7 +507,7 @@ async function main() {
   // The arch view: the reference photo's viewpoint (from the water, looking out past the arch)
   // and a midday calm-sea look. Turning the beach off restores the previous settings.
   const BEACH_LOOK = { sunElev: 55, sunAzim: -110, sunRed: 0, skyTint: 0, timeOfDay: 0, windSpeed: 3.5,
-    swellHs: 0.25, swellLength: 60, choppy: 0.8, foam: 0.2, clouds: 0.0, veil: 0.55, haze: 1.2, exposure: 0.5, bloom: 0.04, saturation: 1.4 };
+    swellHs: 0.25, swellLength: 60, choppy: 0.8, foam: 0.2, clouds: 0.0, veil: 0.55, haze: 1.2, exposure: 0.5, bloom: 0.04, saturation: 1.4, contrast: 1.22 };
   let savedLook = null;
   function beachCamera() { Object.assign(cam, { x: 0, y: 2.5, z: 0, yaw: 0, pitch: -10 * D2R }); }
   function applyBeachLook(on) {
@@ -871,7 +872,7 @@ async function main() {
 
     const nt = lightNow().night;
     compData[0] = P.exposure * (1 + (NIGHT_EXPOSURE - 1) * nt); compData[1] = P.bloom * (1 + 1.5 * nt); compData[2] = frameIndex % 64; compData[3] = 0.10 + 0.12 * nt;
-    compData[4] = P.saturation - 0.4 * nt; compData[5] = 1.06; compData[6] = -0.19 - 0.22 * nt; compData[7] = 0;
+    compData[4] = P.saturation - 0.4 * nt; compData[5] = P.contrast; compData[6] = -0.19 - 0.22 * nt; compData[7] = 0;
     device.queue.writeBuffer(compUBO, 0, compData);
     const swapTex = ctx.getCurrentTexture();
     compPass.colorAttachments[0].view = swapTex.createView();
