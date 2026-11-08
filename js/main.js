@@ -7,6 +7,7 @@ import { SIM_INIT, SIM_EVOLVE, FFT_ROWS, FFT_COLS, SIM_MIPS, FOAM_TEX, RGBA8_MIP
 import { TRANS_LUT, MS_LUT, SKYVIEW_LUT, ENV_CUBE, CUBE_MIPS, SUN_VIS } from './wgsl/sky.js';
 import { OCEAN, SKY_BG, HEIGHT_PROBE } from './wgsl/ocean.js';
 import { BLOOM_DOWN, BLOOM_UP, COMPOSITE } from './wgsl/post.js';
+import { TERRAIN, TERRAIN_GRID } from './wgsl/terrain.js';
 
 const qs = new URLSearchParams(location.search);
 const DBG = Number(qs.get('dbg')) || 0;
@@ -40,6 +41,7 @@ export const P = {
   timeOfDay: 0.0,      // 0 = red sunset, 0.5 = dark twilight, 1 = moonlit night
   moonAzim: -8,        // deg, where the moon rises
   moonElev: 11,        // deg, highest moon height at full night
+  beach: 0,            // 1 = the island cove (Cala Goloritzé) behind the start view
 };
 const NIGHT_EXPOSURE = 0.3;    // night is darker overall; the moon and stars carry it
 const CASC_L = [1103.0, 211.3, 39.7, 7.43, 1.393, 0.2617];
@@ -251,10 +253,18 @@ async function main() {
   // --------------------------------------------------------------------------------------
   const MSAA = 4;
   const HDR = 'rgba16float';
-  const [oceanMod, skyMod, downMod, upMod, compMod] = await Promise.all([
+  const [oceanMod, skyMod, downMod, upMod, compMod, terrainMod] = await Promise.all([
     shader(OCEAN, 'ocean'), shader(SKY_BG, 'sky'), shader(BLOOM_DOWN, 'bloom down'),
-    shader(BLOOM_UP, 'bloom up'), shader(COMPOSITE, 'composite'),
+    shader(BLOOM_UP, 'bloom up'), shader(COMPOSITE, 'composite'), shader(TERRAIN, 'terrain'),
   ]);
+  const terrainPipe = await device.createRenderPipelineAsync({
+    label: 'terrain', layout: 'auto',
+    vertex: { module: terrainMod, entryPoint: 'vs' },
+    fragment: { module: terrainMod, entryPoint: 'fs', targets: [{ format: HDR }] },
+    primitive: { topology: 'triangle-list', cullMode: 'none' },
+    depthStencil: { format: 'depth32float', depthWriteEnabled: true, depthCompare: 'greater' },
+    multisample: { count: MSAA },
+  });
   const oceanPipe = await device.createRenderPipelineAsync({
     label: 'ocean', layout: 'auto',
     vertex: {
@@ -297,6 +307,7 @@ async function main() {
     fullArr(dispTex), fullArr(derivTex), fullArr(momTex), foamTex.createView(), envCubeView, sampRepeat,
     fullArr(foamW[i]), { buffer: sunVisBuf }], 'ocean' + i));
   const bgSky = bg(skyPipe, [{ buffer: frameUBO }, transView, skyView, sampClamp], 'sky');
+  const bgTerrain = bg(terrainPipe, [{ buffer: frameUBO }, transView, skyView, sampClamp], 'terrain');
 
   // Water height under the camera (async readback, a few frames of latency) so the
   // floating camera rides above passing crests instead of clipping into them.
@@ -488,7 +499,29 @@ async function main() {
     cam.y = Math.max(1.0, Math.min(3000, cam.y));
     // keep clear of the actual (displaced) water surface under the camera
     if (cam.y < waterH + 0.9) cam.y += (waterH + 0.9 - cam.y) * Math.min(1, dt * 12);
+    if (P.beach > 0.5) cam.y = Math.max(cam.y, islandTop(cam.x, cam.z) + 2.0);
   }
+
+  // Upper bound of the island height under the camera (the shader adds erosion noise, so this
+  // assumes the worst case) so the camera never flies into the cliffs.
+  function islandTop(x, z) {
+    const xc = Math.min(330, Math.max(-330, x));
+    const bwn = Math.exp(-(x / 125) * (x / 125));
+    const u = z - (640 - 0.0035 * xc * xc) + 10 * (1 - bwn);
+    const mask = (1 - ss(650, 980, Math.abs(x))) * (1 - ss(1500, 2150, z));
+    let h = -55;
+    if (u > -2) {
+      const bw = bwn * 55, v = Math.max(u + 14 - bw, 0);
+      h = Math.min(Math.max(u, 0), bw) * 0.13 + 210 * (1 - Math.exp(-v / 20)) + v * 0.09 + 12;
+    }
+    h = -55 + (h + 55) * mask;
+    const r = Math.hypot(x + 78, z - 627);
+    const needle = r < 24 ? 143 : -100;
+    return Math.max(h, needle);
+  }
+  function ss(a, b, x) { const k = Math.min(Math.max((x - a) / (b - a), 0), 1); return k * k * (3 - 2 * k); }
+  // start out at sea looking into the cove, with the setting sun behind
+  function beachCamera() { Object.assign(cam, { x: -25, y: 8, z: 170, yaw: 182 * D2R, pitch: 7 * D2R }); }
 
   // --------------------------------------------------------------------------------------
   // CDLOD node selection (CPU, allocation free)
@@ -606,6 +639,7 @@ async function main() {
     f[36] = W; f[37] = H; f[38] = 1 / W; f[39] = 1 / H;
     for (let c = 0; c < C; c++) { f[40 + c] = CASC_L[c]; f[48 + c] = 1 / CASC_L[c]; }
     f[56] = Math.cos(P.windDir * D2R); f[57] = Math.sin(P.windDir * D2R); f[58] = P.windSpeed;
+    f[60] = P.beach > 0.5 ? 1 : 0;
     f[64] = R0; f[65] = GRID; f[66] = FOAM_LEVEL_SIZE[0]; f[67] = FOAM_LEVEL_SIZE[1];
     f[68] = P.exposure; f[69] = P.bloom; f[70] = frameIndex; f[71] = DBG;
     f[72] = P.haze; f[73] = Math.max(cam.y, 10) * 0.001; f[74] = P.veil; f[75] = 0.9;
@@ -646,6 +680,7 @@ async function main() {
     ['skyTint', 'Fuzzzy sky tint', 0, 2, 0.01, ''],
     ['timeOfDay', 'Time of day (sunset to night)', 0, 1, 0.005, ''],
     ['sunRed', 'Fuzzzy red sun', 0, 1, 0.01, ''],
+    ['beach', 'Island beach (Cala Goloritzé)', 0, 1, 1, 'beach'],
   ];
   for (const [key, label, min, max, step, kind] of SLIDERS) {
     const row = document.createElement('label');
@@ -657,6 +692,7 @@ async function main() {
       P[key] = Number(inp.value); val.textContent = inp.value;
       if (kind === 'spec') needSpectrum = true;
       if (kind === 'lut') needLUT = true;
+      if (kind === 'beach' && P.beach > 0.5) beachCamera();
       envFull = 2;
     });
     row.append(name, inp, val);
@@ -664,6 +700,7 @@ async function main() {
   }
   if (qs.get('ui') === '0') { document.getElementById('hud').style.display = 'none'; panel.classList.add('hidden'); }
   for (const k of Object.keys(P)) if (qs.has(k)) P[k] = Number(qs.get(k));
+  if (P.beach > 0.5 && !qs.get('cam')) beachCamera();
 
   const hudFps = document.getElementById('fps');
 
@@ -806,6 +843,11 @@ async function main() {
       rp.setVertexBuffer(0, instBuf);
       rp.setIndexBuffer(idxBuf, 'uint16');
       rp.drawIndexed(GRID * GRID * 6, nodeCount);
+    }
+    if (P.beach > 0.5) {
+      rp.setPipeline(terrainPipe);
+      rp.setBindGroup(0, bgTerrain);
+      rp.draw((TERRAIN_GRID - 1) * (TERRAIN_GRID - 1) * 6);
     }
     rp.setPipeline(skyPipe);
     rp.setBindGroup(0, bgSky);
