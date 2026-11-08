@@ -35,6 +35,11 @@ const HA: vec3f = vec3f(-1.0, 0.0, -97.0);
 const HD: vec3f = vec3f(0.681, 0.0, 0.732);
 const HN: vec3f = vec3f(-0.732, 0.0, 0.681);
 
+fn ridgeAt(p: vec3f) -> f32 {
+  let s = dot(p - HA, HD);
+  let sp = max(s, 0.0);
+  return 18.0 + 1.35 * sp - 0.003 * sp * sp + 6.0 * vnoise(vec3f(s * 0.05, 4.1, 2.0));
+}
 fn headland(p: vec3f) -> f32 {
   let r = p - HA;
   let s = dot(r, HD);
@@ -50,11 +55,11 @@ fn headland(p: vec3f) -> f32 {
 
 // the arch: a leaning outer leg standing in the sea and a thick lintel back to the headland
 fn archLeg(p: vec3f) -> f32 {
-  var q = p - vec3f(-18.5, 0.0, -96.0);
+  var q = p - vec3f(-20.0, 0.0, -96.0);
   let t = clamp(q.y / 15.0, 0.0, 1.0);
-  q.x -= q.y * 0.85;                                  // leans hard towards the headland, like a ramp
-  let w = mix(7.5, 2.8, t);
-  let dxz = length(max(abs(q.xz) - vec2f(w, 4.5), vec2f(0.0))) + min(max(abs(q.x) - w, abs(q.z) - 4.5), 0.0);
+  q.x -= q.y * 0.95;                                  // leans hard towards the headland, like a ramp
+  let w = mix(10.5, 3.2, pow(t, 0.7));
+  let dxz = length(max(abs(q.xz) - vec2f(w, 5.5), vec2f(0.0))) + min(max(abs(q.x) - w, abs(q.z) - 5.5), 0.0);
   let dy = max(-q.y - 6.0, q.y - 17.5);
   return max(dxz, dy) - 1.0;
 }
@@ -74,14 +79,38 @@ fn rockShape(p: vec3f) -> f32 {
   return smin(headland(p), smin(archLeg(p), archLintel(p), 2.5), 3.0);
 }
 // full detail for the rock surface itself
+// scrub: rounded clumps standing proud of the rock along the ridge, over the top and on the arch
+fn scrubSDF(p: vec3f, base: f32) -> f32 {
+  let top = smoothstep(14.0, 2.0, ridgeAt(p) - p.y) * smoothstep(-2.0, 6.0, dot(p - HA, HD));
+  let archTop = smoothstep(19.0, 22.0, p.y) * smoothstep(-6.0, 0.0, p.x) * smoothstep(6.0, 0.0, archLintel(p));
+  let zone = max(top, archTop) * smoothstep(12.0, 18.0, p.y);
+  if (zone <= 0.0) { return 1e3; }
+  let clump = smoothstep(0.0, 0.3, fbm3(p * 0.32 + 2.0, 3)) * zone;
+  if (clump <= 0.0) { return 1e3; }
+  return base - 2.2 * clump + 0.5 * fbm3(p * 1.3, 2) + 0.5;
+}
 fn rockSDF(p: vec3f) -> f32 {
   var d = rockShape(p);
   if (d < 8.0) {
-    // big angular facets, then fluted vertical grooves, then small cracks
-    let f = fbm3(p * 0.05, 3);
-    d += 4.0 * (abs(f) - 0.15) + 1.4 * fbm3(p * vec3f(0.18, 0.07, 0.18), 3) + 0.3 * fbm3(p * 0.8, 2);
+    // blocky limestone: ridged noise gives sharp-edged facets and creases at three scales,
+    // tilted bedding planes give ledges, and fine noise roughens every face
+    let r1 = 1.0 - abs(vnoise(p * 0.045));
+    let r2 = 1.0 - abs(vnoise(p * 0.13 + 3.1));
+    let r3 = 1.0 - abs(vnoise(p * vec3f(0.45, 0.2, 0.45) + 7.7));
+    d -= 4.5 * r1 * r1 + 1.6 * r2 * r2 + 0.45 * r3 * r3 - 4.0;
+    let bed = dot(p, normalize(vec3f(0.15, 1.0, 0.25)));
+    d += 0.25 * smoothstep(0.6, 0.9, fract(bed * 0.16 + 1.2 * vnoise(p * 0.05))) * smoothstep(-0.2, 0.3, vnoise(p * 0.08 + 4.0));
+    d += 0.18 * fbm3(p * 1.4, 2);
   }
   return d;
+}
+// rock or scrub, whichever is nearer: x = distance, y = 1 for scrub
+fn sceneSDF(p: vec3f) -> vec2f {
+  let base = rockShape(p);
+  let r = rockSDF(p);
+  if (base > 10.0) { return vec2f(r, 0.0); }
+  let b = scrubSDF(p, base);
+  return select(vec2f(r, 0.0), vec2f(b, 1.0), b < r);
 }
 
 // seabed depth of the cove: shallow towards the beach (behind the camera), deeper out to sea
@@ -116,15 +145,15 @@ const BMAX: vec3f = vec3f(170.0, 175.0, 90.0);
 
 fn rockNormal(p: vec3f, e: f32) -> vec3f {
   let k = vec2f(1.0, -1.0);
-  return normalize(k.xyy * rockSDF(p + k.xyy * e) + k.yyx * rockSDF(p + k.yyx * e) +
-                   k.yxy * rockSDF(p + k.yxy * e) + k.xxx * rockSDF(p + k.xxx * e));
+  return normalize(k.xyy * sceneSDF(p + k.xyy * e).x + k.yyx * sceneSDF(p + k.yyx * e).x +
+                   k.yxy * sceneSDF(p + k.yxy * e).x + k.xxx * sceneSDF(p + k.xxx * e).x);
 }
 fn rockShadow(p: vec3f, L: vec3f) -> f32 {
   if (L.y <= 0.0) { return 0.0; }
   var s = 1.0;
   var t = 0.6;
   for (var i = 0; i < 28; i++) {
-    let d = rockShape(p + L * t);
+    let d = select(rockShape(p + L * t), sceneSDF(p + L * t).x, t < 30.0);
     s = min(s, clamp(8.0 * d / t, 0.0, 1.0));
     if (s < 0.01 || t > 160.0) { break; }
     t += clamp(d, 0.4, 12.0);
@@ -134,12 +163,12 @@ fn rockShadow(p: vec3f, L: vec3f) -> f32 {
 fn rockAO(p: vec3f, n: vec3f) -> f32 {
   var o = 0.0;
   var w = 1.0;
-  for (var i = 1; i <= 5; i++) {
-    let h = f32(i) * 1.6;
-    o += w * (h - rockShape(p + n * h));
-    w *= 0.6;
+  for (var i = 1; i <= 6; i++) {
+    let h = 0.15 + f32(i * i) * 0.25;
+    o += w * (h - sceneSDF(p + n * h).x);
+    w *= 0.7;
   }
-  return clamp(1.0 - o * 0.09, 0.15, 1.0);
+  return clamp(1.0 - o * 0.35, 0.05, 1.0);
 }
 
 @fragment fn fs(in: VO) -> FO {
@@ -158,14 +187,15 @@ fn rockAO(p: vec3f, n: vec3f) -> f32 {
   var hit = false;
   for (var i = 0; i < 160; i++) {
     let p = ro + rd * t;
-    let d = rockSDF(p);
-    if (d < 0.0015 * t + 0.01) { hit = true; break; }
+    let d = sceneSDF(p).x;
+    if (d < 0.0012 * t + 0.008) { hit = true; break; }
     t += d * 0.75;
     if (t > tf) { break; }
   }
   if (!hit) { discard; }
   let p = ro + rd * t;
   if (p.y < -0.5) { discard; }                      // under water: the sea draws it
+  let mat = sceneSDF(p).y;
   var n = rockNormal(p, 0.004 * t + 0.02);
   let fl = vec3f(vnoise(vec3f(p.x * 1.1, p.y * 0.08, p.z * 1.1)), 0.0, vnoise(vec3f(p.x * 1.1 + 7.0, p.y * 0.08, p.z * 1.1)));
   n = normalize(n + fl * 0.35 * (1.0 - abs(n.y)));
@@ -173,19 +203,28 @@ fn rockAO(p: vec3f, n: vec3f) -> f32 {
   // ---- limestone, as in the photo: bright white-grey, grey streaks, rust under the arch ----
   let streak = fbm3(vec3f(p.x * 0.4, p.y * 0.035, p.z * 0.4), 4);
   let blot = fbm3(p * 0.07 + 3.0, 3);
-  var alb = vec3f(0.55, 0.55, 0.53);
-  alb = mix(alb, vec3f(0.24, 0.26, 0.27), smoothstep(-0.05, 0.3, streak) * 0.9);
+  var alb = vec3f(0.5, 0.5, 0.48);
+  alb = mix(alb, vec3f(0.22, 0.24, 0.25), smoothstep(-0.15, 0.25, streak) * 0.9);
   alb = mix(alb, vec3f(0.46, 0.47, 0.48), smoothstep(-0.1, 0.3, blot) * 0.5);
   let under = smoothstep(0.1, -0.5, n.y);
   alb = mix(alb, vec3f(0.45, 0.30, 0.20), under * smoothstep(-0.2, 0.4, fbm3(p * 0.15, 2)) * 0.8);
   alb *= 0.85 + 0.25 * fbm3(p * 0.9, 2);
+  // dark weathered cracks and pits
+  let crack = smoothstep(0.965, 0.998, 1.0 - abs(vnoise(p * vec3f(1.3, 0.22, 1.3) + 2.0)));
+  alb *= 1.0 - 0.4 * crack;
+  // patches of grey-black lichen and water stains
+  alb = mix(alb, vec3f(0.16, 0.17, 0.17), smoothstep(0.2, 0.5, fbm3(vec3f(p.x * 0.9, p.y * 0.12, p.z * 0.9) + 5.0, 3)) * 0.35);
   // dark band where the sea wets the rock
   alb = mix(alb * vec3f(0.55, 0.56, 0.55), alb, smoothstep(0.2, 1.4, p.y + 0.4 * vnoise(p * 0.5)));
   // scrub and pines on the slopes up top
   let vegN = fbm3(p * 0.12 + 7.0, 3);
   let veg = max(smoothstep(-0.15, 0.3, n.y) * smoothstep(24.0, 34.0, p.y), smoothstep(0.35, 0.7, n.y) * smoothstep(12.0, 18.0, p.y)) * smoothstep(-0.25, 0.05, vegN);
   let green = mix(vec3f(0.06, 0.11, 0.04), vec3f(0.16, 0.24, 0.08), smoothstep(-0.2, 0.5, fbm3(p * 0.5, 2)));
-  alb = mix(alb, green, veg);
+  alb = mix(alb, green, veg * 0.6);
+  if (mat > 0.5) {
+    // scrub: dark glossy evergreen leaves, lighter tips catching the sun
+    alb = mix(vec3f(0.035, 0.07, 0.025), vec3f(0.17, 0.27, 0.07), smoothstep(-0.1, 0.45, fbm3(p * 1.7, 3)));
+  }
 
   // ---- light ----
   let L = F.sunDir.xyz;
