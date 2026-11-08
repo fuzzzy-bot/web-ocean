@@ -34,7 +34,7 @@ struct VO { @builtin(position) pos: vec4f, @location(0) ndc: vec2f };
   let aa = vec2f(fwidth(el), fwidth(eh));
   var sunT = 1.0;
   let cl = cloudLayers(d2, pixAng, aa, &sunT);
-  let L = fuzzzySunOver(dir, fuzzzySky(d2, skyAtmo(d2) * (1.0 - cl.a) + cl.rgb) + sunDisk(dir) * sunT, sunT);
+  let L = fuzzzyNight(dir, fuzzzySunOver(dir, fuzzzySky(d2, skyAtmo(d2) * (1.0 - cl.a) + cl.rgb) + sunDisk(dir) * sunT, sunT), sunT, pixAng);
   return vec4f(L, 1.0);
 }
 `;

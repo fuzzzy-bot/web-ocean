@@ -45,7 +45,7 @@ struct Frame {
   viewProj: mat4x4f,   // camera-relative view-projection (reverse-Z, infinite)
   camPos:   vec4f,     // xyz metres, w = time (s)
   camRight: vec4f,     // xyz * tan(fovX/2), w = Fuzzzy red sun strength
-  camUp:    vec4f,     // xyz * tan(fovY/2)
+  camUp:    vec4f,     // xyz * tan(fovY/2), w = night (0..1, light is the moon)
   camFwd:   vec4f,     // xyz, w = Fuzzzy sky tint strength
   sunDir:   vec4f,     // xyz towards sun, w = solar illuminance scale
   screen:   vec4f,     // w, h, 1/w, 1/h
@@ -1011,7 +1011,56 @@ fn sunDisk(dir: vec3f) -> vec3f {
   let mu = sqrt(max(1.0 - x * x, 0.0));
   let limb = vec3f(1.0) - vec3f(0.397, 0.503, 0.652) * (1.0 - mu);
   let rad = F.sunDir.w / (PI * SUN_ANG_R * SUN_ANG_R);
-  return rad * limb * edge * sampleTrans(camR(), max(dir.y, -0.01)) * (1.0 - clamp(red, 0.0, 1.0));
+  return rad * limb * edge * sampleTrans(camR(), max(dir.y, -0.01)) * (1.0 - clamp(red, 0.0, 1.0)) * (1.0 - F.camUp.w);
+}
+
+// Night (F.camUp.w = 0..1): the light direction is the moon. Big silver moon with soft maria,
+// a halo, and stars that fade in where the sky is dark.
+fn fuzzzyStars(dir: vec3f, pixAng: f32) -> vec3f {
+  if (dir.y <= 0.0) { return vec3f(0.0); }
+  let p = dir.xz / (1.0 + dir.y) * 420.0;          // stereographic grid, about 0.14 deg cells
+  let cell = floor(p);
+  let h = pcgHash(u32(i32(cell.x) + 4096) * 7919u + u32(i32(cell.y) + 4096));
+  let r = f32(h & 0xffffu) / 65535.0;
+  if (r < 0.985) { return vec3f(0.0); }
+  let o = vec2f(f32((h >> 16u) & 0xffu), f32(h >> 24u)) / 255.0 * 0.7 + 0.15;
+  let d = length(p - cell - o);
+  let px = max(pixAng * 420.0 * 0.5, 0.06);           // one pixel in grid units
+  let tw = 0.75 + 0.25 * sin(F.camPos.w * (2.0 + r * 40.0) + r * 300.0);
+  let mag = pow((r - 0.985) / 0.015, 3.0) * 6.0 + 0.4;
+  let warm = mix(vec3f(0.75, 0.85, 1.0), vec3f(1.0, 0.85, 0.7), fract(r * 97.0));
+  return warm * mag * tw * exp(-d * d / (px * px)) * smoothstep(0.0, 0.08, dir.y);
+}
+
+fn fuzzzyMoon(dir: vec3f, L: vec3f) -> vec3f {
+  let R = SUN_ANG_R * FUZZZY_MOON_SIZE;
+  let c = dot(dir, F.sunDir.xyz);
+  let ang = sqrt(max(2.0 * (1.0 - c), 0.0));
+  let pix = F.screen.w * 2.0 * length(F.camUp.xyz) * 0.75;
+  let edge = 1.0 - smoothstep(R - pix, R + pix, ang);
+  // local disc coordinates for the maria
+  let up = vec3f(0.0, 1.0, 0.0);
+  let t1 = normalize(cross(up, F.sunDir.xyz));
+  let t2 = cross(F.sunDir.xyz, t1);
+  let q = vec2f(dot(dir, t1), dot(dir, t2)) / R;
+  let maria = smoothstep(0.05, 0.6, gnoise(q * 2.2 + 3.1) * 0.6 + gnoise(q * 5.0 + 9.7) * 0.4 + 0.15);
+  let x = min(ang / R, 1.0);
+  let limb = 0.82 + 0.18 * sqrt(max(1.0 - x * x, 0.0));
+  let disc = FUZZZY_MOON_COL * FUZZZY_MOON_BRIGHT * limb * (1.0 - 0.32 * maria);
+  let halo = FUZZZY_MOON_COL * (0.9 * exp(-ang / (R * 2.5)) + 0.35 * exp(-ang / (R * 9.0)));
+  return mix(L + halo, disc, edge);
+}
+const FUZZZY_MOON_SIZE: f32 = 7.0;
+const FUZZZY_MOON_BRIGHT: f32 = 9.0;
+const FUZZZY_MOON_COL: vec3f = vec3f(0.92, 0.95, 1.0);
+
+fn fuzzzyNight(dir: vec3f, L: vec3f, sunT: f32, pixAng: f32) -> vec3f {
+  let night = F.camUp.w;
+  if (night <= 0.0) { return L; }
+  let skyLum = dot(L, vec3f(0.2126, 0.7152, 0.0722));
+  let starVis = sunT * night * (1.0 - smoothstep(1.0, 8.0, skyLum));
+  let withStars = L + fuzzzyStars(dir, pixAng) * starVis;
+  return mix(withStars, fuzzzyMoon(dir, withStars), night * mix(0.3, 1.0, sunT));
 }
 
 // Paints the surreal red sun over the sky (replaces the sky behind it, so it stays deep red).
@@ -1186,7 +1235,7 @@ struct VO { @builtin(position) pos: vec4f, @location(0) ndc: vec2f };
   let aa = vec2f(fwidth(el), fwidth(eh));
   var sunT = 1.0;
   let cl = cloudLayers(d2, pixAng, aa, &sunT);
-  let L = fuzzzySunOver(dir, fuzzzySky(d2, skyAtmo(d2) * (1.0 - cl.a) + cl.rgb) + sunDisk(dir) * sunT, sunT);
+  let L = fuzzzyNight(dir, fuzzzySunOver(dir, fuzzzySky(d2, skyAtmo(d2) * (1.0 - cl.a) + cl.rgb) + sunDisk(dir) * sunT, sunT), sunT, pixAng);
   return vec4f(L, 1.0);
 }
 `;
@@ -1619,9 +1668,13 @@ const P = {
   clouds: 0.40,
   veil: 0.36,
   bloom: 0.10,
-  skyTint: 1.0,
-  sunRed: 1.0,         // Fuzzzy surreal red sun (0 = natural sun)        // Fuzzzy Core warm sky tint (0 = original sky)
+  skyTint: 1.0,        // Fuzzzy Core warm sky tint (0 = original sky)
+  sunRed: 1.0,         // Fuzzzy surreal red sun (0 = natural sun)
+  timeOfDay: 0.0,      // 0 = red sunset, 0.5 = dark twilight, 1 = moonlit night
+  moonAzim: -8,        // deg, where the moon rises
+  moonElev: 11,        // deg, highest moon height at full night
 };
+const NIGHT_EXPOSURE = 0.3;    // night is darker overall; the moon and stars carry it
 const CASC_L = [1103.0, 211.3, 39.7, 7.43, 1.393, 0.2617];
 
 function fail(msg) {
@@ -2143,6 +2196,20 @@ async function main() {
   let simTime = Number(qs.get('t')) || 0;
   let frameIndex = 0;
 
+  // Time of day: first half sets the sun into dark twilight, second half raises the moon.
+  // The scene has one light; at the darkest twilight it hands over from the sun to the moon.
+  function lightNow() {
+    const t = Math.min(Math.max(P.timeOfDay, 0), 1);
+    const ss = (a, b, x) => { const k = Math.min(Math.max((x - a) / (b - a), 0), 1); return k * k * (3 - 2 * k); };
+    const night = ss(0.4, 0.68, t);                       // moon, stars and the night grade
+    if (t <= 0.5) {
+      const u = t / 0.5;
+      return { elev: P.sunElev + (-4 - P.sunElev) * ss(0, 1, u), azim: P.sunAzim, illum: 1 - 0.85 * ss(0.5, 1, u), night };
+    }
+    const v = (t - 0.5) / 0.5;
+    return { elev: -1 + (P.moonElev + 1) * ss(0, 0.8, v), azim: P.moonAzim, illum: 0.16 - 0.04 * ss(0.3, 1, v), night };
+  }
+
   function writeFrame(time) {
     const aspect = W / H;
     const tanY = Math.tan(cam.fovY * 0.5), tanX = tanY * aspect;
@@ -2162,11 +2229,13 @@ async function main() {
     const f = frameF;
     f.set(viewProj, 0);
     f[16] = cam.x; f[17] = cam.y; f[18] = cam.z; f[19] = time;
-    f[20] = rx * tanX; f[21] = ry * tanX; f[22] = rz * tanX; f[23] = P.sunRed;
-    f[24] = ux * tanY; f[25] = uy * tanY; f[26] = uz * tanY; f[27] = 0;
-    f[28] = fx; f[29] = fy; f[30] = fz; f[31] = P.skyTint;
-    const se = P.sunElev * D2R, sa = P.sunAzim * D2R;
-    f[32] = Math.sin(sa) * Math.cos(se); f[33] = Math.sin(se); f[34] = -Math.cos(sa) * Math.cos(se); f[35] = 14.0;
+    f[20] = rx * tanX; f[21] = ry * tanX; f[22] = rz * tanX;
+    f[24] = ux * tanY; f[25] = uy * tanY; f[26] = uz * tanY;
+    f[28] = fx; f[29] = fy; f[30] = fz;
+    const L = lightNow();
+    const se = L.elev * D2R, sa = L.azim * D2R;
+    f[32] = Math.sin(sa) * Math.cos(se); f[33] = Math.sin(se); f[34] = -Math.cos(sa) * Math.cos(se); f[35] = 14.0 * L.illum;
+    f[23] = P.sunRed * (1 - L.night); f[27] = L.night; f[31] = P.skyTint * (1 - 0.6 * L.night);
     f[36] = W; f[37] = H; f[38] = 1 / W; f[39] = 1 / H;
     for (let c = 0; c < C; c++) { f[40 + c] = CASC_L[c]; f[48 + c] = 1 / CASC_L[c]; }
     f[56] = Math.cos(P.windDir * D2R); f[57] = Math.sin(P.windDir * D2R); f[58] = P.windSpeed;
@@ -2208,6 +2277,7 @@ async function main() {
     ['exposure', 'Exposure', 0.1, 4, 0.01, ''],
     ['bloom', 'Bloom', 0, 0.3, 0.001, ''],
     ['skyTint', 'Fuzzzy sky tint', 0, 2, 0.01, ''],
+    ['timeOfDay', 'Time of day (sunset to night)', 0, 1, 0.005, ''],
     ['sunRed', 'Fuzzzy red sun', 0, 1, 0.01, ''],
   ];
   for (const [key, label, min, max, step, kind] of SLIDERS) {
@@ -2390,8 +2460,9 @@ async function main() {
       p.end();
     }
 
-    compData[0] = P.exposure; compData[1] = P.bloom; compData[2] = frameIndex % 64; compData[3] = 0.10;
-    compData[4] = 1.05; compData[5] = 1.06; compData[6] = -0.19; compData[7] = 0;
+    const nt = lightNow().night;
+    compData[0] = P.exposure * (1 + (NIGHT_EXPOSURE - 1) * nt); compData[1] = P.bloom * (1 + 1.5 * nt); compData[2] = frameIndex % 64; compData[3] = 0.10 + 0.12 * nt;
+    compData[4] = 1.05 - 0.4 * nt; compData[5] = 1.06; compData[6] = -0.19 - 0.22 * nt; compData[7] = 0;
     device.queue.writeBuffer(compUBO, 0, compData);
     const swapTex = ctx.getCurrentTexture();
     compPass.colorAttachments[0].view = swapTex.createView();

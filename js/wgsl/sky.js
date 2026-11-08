@@ -393,7 +393,56 @@ fn sunDisk(dir: vec3f) -> vec3f {
   let mu = sqrt(max(1.0 - x * x, 0.0));
   let limb = vec3f(1.0) - vec3f(0.397, 0.503, 0.652) * (1.0 - mu);
   let rad = F.sunDir.w / (PI * SUN_ANG_R * SUN_ANG_R);
-  return rad * limb * edge * sampleTrans(camR(), max(dir.y, -0.01)) * (1.0 - clamp(red, 0.0, 1.0));
+  return rad * limb * edge * sampleTrans(camR(), max(dir.y, -0.01)) * (1.0 - clamp(red, 0.0, 1.0)) * (1.0 - F.camUp.w);
+}
+
+// Night (F.camUp.w = 0..1): the light direction is the moon. Big silver moon with soft maria,
+// a halo, and stars that fade in where the sky is dark.
+fn fuzzzyStars(dir: vec3f, pixAng: f32) -> vec3f {
+  if (dir.y <= 0.0) { return vec3f(0.0); }
+  let p = dir.xz / (1.0 + dir.y) * 420.0;          // stereographic grid, about 0.14 deg cells
+  let cell = floor(p);
+  let h = pcgHash(u32(i32(cell.x) + 4096) * 7919u + u32(i32(cell.y) + 4096));
+  let r = f32(h & 0xffffu) / 65535.0;
+  if (r < 0.985) { return vec3f(0.0); }
+  let o = vec2f(f32((h >> 16u) & 0xffu), f32(h >> 24u)) / 255.0 * 0.7 + 0.15;
+  let d = length(p - cell - o);
+  let px = max(pixAng * 420.0 * 0.5, 0.06);           // one pixel in grid units
+  let tw = 0.75 + 0.25 * sin(F.camPos.w * (2.0 + r * 40.0) + r * 300.0);
+  let mag = pow((r - 0.985) / 0.015, 3.0) * 6.0 + 0.4;
+  let warm = mix(vec3f(0.75, 0.85, 1.0), vec3f(1.0, 0.85, 0.7), fract(r * 97.0));
+  return warm * mag * tw * exp(-d * d / (px * px)) * smoothstep(0.0, 0.08, dir.y);
+}
+
+fn fuzzzyMoon(dir: vec3f, L: vec3f) -> vec3f {
+  let R = SUN_ANG_R * FUZZZY_MOON_SIZE;
+  let c = dot(dir, F.sunDir.xyz);
+  let ang = sqrt(max(2.0 * (1.0 - c), 0.0));
+  let pix = F.screen.w * 2.0 * length(F.camUp.xyz) * 0.75;
+  let edge = 1.0 - smoothstep(R - pix, R + pix, ang);
+  // local disc coordinates for the maria
+  let up = vec3f(0.0, 1.0, 0.0);
+  let t1 = normalize(cross(up, F.sunDir.xyz));
+  let t2 = cross(F.sunDir.xyz, t1);
+  let q = vec2f(dot(dir, t1), dot(dir, t2)) / R;
+  let maria = smoothstep(0.05, 0.6, gnoise(q * 2.2 + 3.1) * 0.6 + gnoise(q * 5.0 + 9.7) * 0.4 + 0.15);
+  let x = min(ang / R, 1.0);
+  let limb = 0.82 + 0.18 * sqrt(max(1.0 - x * x, 0.0));
+  let disc = FUZZZY_MOON_COL * FUZZZY_MOON_BRIGHT * limb * (1.0 - 0.32 * maria);
+  let halo = FUZZZY_MOON_COL * (0.9 * exp(-ang / (R * 2.5)) + 0.35 * exp(-ang / (R * 9.0)));
+  return mix(L + halo, disc, edge);
+}
+const FUZZZY_MOON_SIZE: f32 = 7.0;
+const FUZZZY_MOON_BRIGHT: f32 = 9.0;
+const FUZZZY_MOON_COL: vec3f = vec3f(0.92, 0.95, 1.0);
+
+fn fuzzzyNight(dir: vec3f, L: vec3f, sunT: f32, pixAng: f32) -> vec3f {
+  let night = F.camUp.w;
+  if (night <= 0.0) { return L; }
+  let skyLum = dot(L, vec3f(0.2126, 0.7152, 0.0722));
+  let starVis = sunT * night * (1.0 - smoothstep(1.0, 8.0, skyLum));
+  let withStars = L + fuzzzyStars(dir, pixAng) * starVis;
+  return mix(withStars, fuzzzyMoon(dir, withStars), night * mix(0.3, 1.0, sunT));
 }
 
 // Paints the surreal red sun over the sky (replaces the sky behind it, so it stays deep red).

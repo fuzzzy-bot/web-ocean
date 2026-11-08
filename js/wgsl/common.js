@@ -14,7 +14,7 @@ struct Frame {
   viewProj: mat4x4f,   // camera-relative view-projection (reverse-Z, infinite)
   camPos:   vec4f,     // xyz metres, w = time (s)
   camRight: vec4f,     // xyz * tan(fovX/2), w = Fuzzzy red sun strength
-  camUp:    vec4f,     // xyz * tan(fovY/2)
+  camUp:    vec4f,     // xyz * tan(fovY/2), w = night (0..1, light is the moon)
   camFwd:   vec4f,     // xyz, w = Fuzzzy sky tint strength
   sunDir:   vec4f,     // xyz towards sun, w = solar illuminance scale
   screen:   vec4f,     // w, h, 1/w, 1/h

@@ -35,9 +35,13 @@ export const P = {
   clouds: 0.40,
   veil: 0.36,
   bloom: 0.10,
-  skyTint: 1.0,
-  sunRed: 1.0,         // Fuzzzy surreal red sun (0 = natural sun)        // Fuzzzy Core warm sky tint (0 = original sky)
+  skyTint: 1.0,        // Fuzzzy Core warm sky tint (0 = original sky)
+  sunRed: 1.0,         // Fuzzzy surreal red sun (0 = natural sun)
+  timeOfDay: 0.0,      // 0 = red sunset, 0.5 = dark twilight, 1 = moonlit night
+  moonAzim: -8,        // deg, where the moon rises
+  moonElev: 11,        // deg, highest moon height at full night
 };
+const NIGHT_EXPOSURE = 0.3;    // night is darker overall; the moon and stars carry it
 const CASC_L = [1103.0, 211.3, 39.7, 7.43, 1.393, 0.2617];
 
 function fail(msg) {
@@ -559,6 +563,20 @@ async function main() {
   let simTime = Number(qs.get('t')) || 0;
   let frameIndex = 0;
 
+  // Time of day: first half sets the sun into dark twilight, second half raises the moon.
+  // The scene has one light; at the darkest twilight it hands over from the sun to the moon.
+  function lightNow() {
+    const t = Math.min(Math.max(P.timeOfDay, 0), 1);
+    const ss = (a, b, x) => { const k = Math.min(Math.max((x - a) / (b - a), 0), 1); return k * k * (3 - 2 * k); };
+    const night = ss(0.4, 0.68, t);                       // moon, stars and the night grade
+    if (t <= 0.5) {
+      const u = t / 0.5;
+      return { elev: P.sunElev + (-4 - P.sunElev) * ss(0, 1, u), azim: P.sunAzim, illum: 1 - 0.85 * ss(0.5, 1, u), night };
+    }
+    const v = (t - 0.5) / 0.5;
+    return { elev: -1 + (P.moonElev + 1) * ss(0, 0.8, v), azim: P.moonAzim, illum: 0.16 - 0.04 * ss(0.3, 1, v), night };
+  }
+
   function writeFrame(time) {
     const aspect = W / H;
     const tanY = Math.tan(cam.fovY * 0.5), tanX = tanY * aspect;
@@ -578,11 +596,13 @@ async function main() {
     const f = frameF;
     f.set(viewProj, 0);
     f[16] = cam.x; f[17] = cam.y; f[18] = cam.z; f[19] = time;
-    f[20] = rx * tanX; f[21] = ry * tanX; f[22] = rz * tanX; f[23] = P.sunRed;
-    f[24] = ux * tanY; f[25] = uy * tanY; f[26] = uz * tanY; f[27] = 0;
-    f[28] = fx; f[29] = fy; f[30] = fz; f[31] = P.skyTint;
-    const se = P.sunElev * D2R, sa = P.sunAzim * D2R;
-    f[32] = Math.sin(sa) * Math.cos(se); f[33] = Math.sin(se); f[34] = -Math.cos(sa) * Math.cos(se); f[35] = 14.0;
+    f[20] = rx * tanX; f[21] = ry * tanX; f[22] = rz * tanX;
+    f[24] = ux * tanY; f[25] = uy * tanY; f[26] = uz * tanY;
+    f[28] = fx; f[29] = fy; f[30] = fz;
+    const L = lightNow();
+    const se = L.elev * D2R, sa = L.azim * D2R;
+    f[32] = Math.sin(sa) * Math.cos(se); f[33] = Math.sin(se); f[34] = -Math.cos(sa) * Math.cos(se); f[35] = 14.0 * L.illum;
+    f[23] = P.sunRed * (1 - L.night); f[27] = L.night; f[31] = P.skyTint * (1 - 0.6 * L.night);
     f[36] = W; f[37] = H; f[38] = 1 / W; f[39] = 1 / H;
     for (let c = 0; c < C; c++) { f[40 + c] = CASC_L[c]; f[48 + c] = 1 / CASC_L[c]; }
     f[56] = Math.cos(P.windDir * D2R); f[57] = Math.sin(P.windDir * D2R); f[58] = P.windSpeed;
@@ -624,6 +644,7 @@ async function main() {
     ['exposure', 'Exposure', 0.1, 4, 0.01, ''],
     ['bloom', 'Bloom', 0, 0.3, 0.001, ''],
     ['skyTint', 'Fuzzzy sky tint', 0, 2, 0.01, ''],
+    ['timeOfDay', 'Time of day (sunset to night)', 0, 1, 0.005, ''],
     ['sunRed', 'Fuzzzy red sun', 0, 1, 0.01, ''],
   ];
   for (const [key, label, min, max, step, kind] of SLIDERS) {
@@ -806,8 +827,9 @@ async function main() {
       p.end();
     }
 
-    compData[0] = P.exposure; compData[1] = P.bloom; compData[2] = frameIndex % 64; compData[3] = 0.10;
-    compData[4] = 1.05; compData[5] = 1.06; compData[6] = -0.19; compData[7] = 0;
+    const nt = lightNow().night;
+    compData[0] = P.exposure * (1 + (NIGHT_EXPOSURE - 1) * nt); compData[1] = P.bloom * (1 + 1.5 * nt); compData[2] = frameIndex % 64; compData[3] = 0.10 + 0.12 * nt;
+    compData[4] = 1.05 - 0.4 * nt; compData[5] = 1.06; compData[6] = -0.19 - 0.22 * nt; compData[7] = 0;
     device.queue.writeBuffer(compUBO, 0, compData);
     const swapTex = ctx.getCurrentTexture();
     compPass.colorAttachments[0].view = swapTex.createView();
